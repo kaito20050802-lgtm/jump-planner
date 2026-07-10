@@ -18,12 +18,15 @@ import {
   DEFAULT_TAGS,
   EVENTS,
   StrengthPrescription,
+  TRAINING_SEASONS,
   TrainingSeason,
+  WEIGHT_PURPOSES,
   WeightPurpose,
 } from "@/types/training";
 import { normalizeText } from "@/lib/trainingTime";
 
 type TimeMode = "auto" | "manual";
+type FormTab = "basic" | "strength";
 
 type Drill = {
   id: string;
@@ -31,9 +34,9 @@ type Drill = {
   category: string;
   targetEvent: string;
   purposeTags?: string[];
-  description: string;
-  volume: string;
-  caution: string;
+  description?: string;
+  volume?: string;
+  caution?: string;
   photoUrl?: string;
   videoUrl?: string;
   timeMode?: TimeMode;
@@ -46,20 +49,22 @@ type Drill = {
   isActive?: boolean;
 };
 
-const SEASONS: TrainingSeason[] = [
-  "冬季練習期",
-  "鍛錬期",
-  "試合準備期",
-  "試合期",
-];
-
-const PURPOSES: WeightPurpose[] = [
-  "筋肥大",
-  "最大筋力",
-  "パワー",
-  "神経系",
-  "調整",
-];
+type DrillForm = {
+  name: string;
+  category: string;
+  targetEvent: string;
+  purposeTags: string[];
+  description: string;
+  volume: string;
+  caution: string;
+  photoUrl: string;
+  videoUrl: string;
+  timeMode: TimeMode;
+  baseDistance: string;
+  baseSeconds: string;
+  defaultMinutes: string;
+  strengthPrescriptions: StrengthPrescription[];
+};
 
 const DEFAULT_STRENGTH_PRESCRIPTIONS: StrengthPrescription[] = [
   {
@@ -69,7 +74,7 @@ const DEFAULT_STRENGTH_PRESCRIPTIONS: StrengthPrescription[] = [
     reps: "2〜3",
     sets: "4〜5",
     restMinutes: "4〜5",
-    memo: "重さ重視。フォームを崩さない。",
+    memo: "重さを重視しつつ、フォームを崩さない。",
   },
   {
     season: "鍛錬期",
@@ -78,7 +83,7 @@ const DEFAULT_STRENGTH_PRESCRIPTIONS: StrengthPrescription[] = [
     reps: "3〜5",
     sets: "3〜4",
     restMinutes: "3",
-    memo: "スピードを落とさず出力する。",
+    memo: "挙上速度を落とさず、瞬発的に動かす。",
   },
   {
     season: "試合準備期",
@@ -87,7 +92,7 @@ const DEFAULT_STRENGTH_PRESCRIPTIONS: StrengthPrescription[] = [
     reps: "2〜3",
     sets: "2〜3",
     restMinutes: "3",
-    memo: "疲労を残さず刺激を入れる。",
+    memo: "疲労を残さず、高い出力の刺激を入れる。",
   },
   {
     season: "試合期",
@@ -96,9 +101,26 @@ const DEFAULT_STRENGTH_PRESCRIPTIONS: StrengthPrescription[] = [
     reps: "1〜2",
     sets: "1〜2",
     restMinutes: "2〜3",
-    memo: "動きのキレを出す。追い込みすぎない。",
+    memo: "動きのキレを保ち、追い込みすぎない。",
   },
 ];
+
+const EMPTY_FORM: DrillForm = {
+  name: "",
+  category: "アップ",
+  targetEvent: "共通",
+  purposeTags: [],
+  description: "",
+  volume: "",
+  caution: "",
+  photoUrl: "",
+  videoUrl: "",
+  timeMode: "manual",
+  baseDistance: "",
+  baseSeconds: "",
+  defaultMinutes: "",
+  strengthPrescriptions: [],
+};
 
 export default function DrillsPage() {
   const router = useRouter();
@@ -111,33 +133,21 @@ export default function DrillsPage() {
     ...DEFAULT_CATEGORIES,
   ]);
 
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
   const [newTag, setNewTag] = useState("");
   const [newCategory, setNewCategory] = useState("");
   const [searchText, setSearchText] = useState("");
 
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [formTab, setFormTab] = useState<"basic" | "strength">("basic");
+  const [formTab, setFormTab] = useState<FormTab>("basic");
+  const [form, setForm] = useState<DrillForm>({ ...EMPTY_FORM });
+
   const [openCategory, setOpenCategory] = useState<string | null>(null);
   const [openEvent, setOpenEvent] = useState<string | null>(null);
   const [openTag, setOpenTag] = useState<string | null>(null);
   const [detailId, setDetailId] = useState<string | null>(null);
-
-  const [form, setForm] = useState({
-    name: "",
-    category: "アップ",
-    targetEvent: "共通",
-    purposeTags: [] as string[],
-    description: "",
-    volume: "",
-    caution: "",
-    photoUrl: "",
-    videoUrl: "",
-    timeMode: "manual" as TimeMode,
-    baseDistance: "",
-    baseSeconds: "",
-    defaultMinutes: "",
-    strengthPrescriptions: [] as StrengthPrescription[],
-  });
 
   useEffect(() => {
     const currentRole = sessionStorage.getItem("currentRole");
@@ -150,55 +160,83 @@ export default function DrillsPage() {
 
     setRole(currentRole);
     setMemberId(currentMemberId);
-    loadDrills();
-    loadTags();
-    loadCategories();
+
+    const load = async () => {
+      try {
+        await Promise.all([
+          loadDrills(),
+          loadTags(),
+          loadCategories(),
+        ]);
+      } catch (error) {
+        console.error("練習メニュー集の読み込みに失敗しました", error);
+        alert("練習メニュー集の読み込みに失敗しました");
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    load();
   }, [router]);
 
   const loadDrills = async () => {
     const q = query(collection(db, "drills"), orderBy("updatedAt", "desc"));
     const snap = await getDocs(q);
 
-    const loaded = snap.docs.map((d) => ({
-      id: d.id,
-      ...d.data(),
+    const loaded = snap.docs.map((item) => ({
+      id: item.id,
+      ...item.data(),
     })) as Drill[];
 
-    setDrills(loaded.filter((d) => d.isActive !== false));
+    setDrills(loaded.filter((drill) => drill.isActive !== false));
   };
 
   const loadTags = async () => {
     const snap = await getDocs(collection(db, "purposeTags"));
-    const customTags = snap.docs.map((d) => String(d.data().name));
+    const customTags = snap.docs
+      .map((item) => String(item.data().name || "").trim())
+      .filter(Boolean);
+
     setTags(Array.from(new Set([...DEFAULT_TAGS, ...customTags])));
   };
 
   const loadCategories = async () => {
     const snap = await getDocs(collection(db, "drillCategories"));
-    const customCategories = snap.docs.map((d) => String(d.data().name));
-    setCategories(Array.from(new Set([...DEFAULT_CATEGORIES, ...customCategories])));
+    const customCategories = snap.docs
+      .map((item) => String(item.data().name || "").trim())
+      .filter(Boolean);
+
+    setCategories(
+      Array.from(new Set([...DEFAULT_CATEGORIES, ...customCategories]))
+    );
   };
 
   const canEditDrill = (drill: Drill) => {
-    if (role === "leader") return true;
-    if (role === "representative") return true;
+    if (role === "leader" || role === "representative") return true;
     return drill.createdBy === memberId;
   };
 
   const toggleTag = (tag: string) => {
-    const exists = form.purposeTags.includes(tag);
-    setForm({
-      ...form,
-      purposeTags: exists
-        ? form.purposeTags.filter((t) => t !== tag)
-        : [...form.purposeTags, tag],
-    });
+    setForm((current) => ({
+      ...current,
+      purposeTags: current.purposeTags.includes(tag)
+        ? current.purposeTags.filter((item) => item !== tag)
+        : [...current.purposeTags, tag],
+    }));
   };
 
   const addTag = async () => {
     const trimmed = newTag.trim();
-    if (!trimmed) return alert("追加するタグ名を入力してください");
-    if (tags.includes(trimmed)) return alert("そのタグはすでにあります");
+
+    if (!trimmed) {
+      alert("追加するタグ名を入力してください");
+      return;
+    }
+
+    if (tags.includes(trimmed)) {
+      alert("そのタグはすでにあります");
+      return;
+    }
 
     await addDoc(collection(db, "purposeTags"), {
       name: trimmed,
@@ -206,15 +244,23 @@ export default function DrillsPage() {
       createdAt: serverTimestamp(),
     });
 
-    setTags([...tags, trimmed]);
+    setTags((current) => [...current, trimmed]);
     setNewTag("");
     alert("タグを追加しました");
   };
 
   const addCategory = async () => {
     const trimmed = newCategory.trim();
-    if (!trimmed) return alert("追加するカテゴリー名を入力してください");
-    if (categories.includes(trimmed)) return alert("そのカテゴリーはすでにあります");
+
+    if (!trimmed) {
+      alert("追加するカテゴリー名を入力してください");
+      return;
+    }
+
+    if (categories.includes(trimmed)) {
+      alert("そのカテゴリーはすでにあります");
+      return;
+    }
 
     await addDoc(collection(db, "drillCategories"), {
       name: trimmed,
@@ -222,70 +268,97 @@ export default function DrillsPage() {
       createdAt: serverTimestamp(),
     });
 
-    setCategories([...categories, trimmed]);
+    setCategories((current) => [...current, trimmed]);
     setNewCategory("");
     alert("カテゴリーを追加しました");
   };
 
   const saveDrill = async () => {
-    if (!form.name.trim()) return alert("練習名を入力してください");
+    if (!form.name.trim()) {
+      alert("練習名を入力してください");
+      setFormTab("basic");
+      return;
+    }
 
     if (form.purposeTags.length === 0) {
-      return alert("目的タグを1つ以上選択してください");
+      alert("目的タグを1つ以上選択してください");
+      setFormTab("basic");
+      return;
     }
 
-    if (form.timeMode === "auto") {
-      if (!form.baseDistance || !form.baseSeconds) {
-        return alert("自動計算の場合は、基準距離と基準時間を入力してください");
+    if (
+      form.timeMode === "auto" &&
+      (!form.baseDistance.trim() || !form.baseSeconds.trim())
+    ) {
+      alert("自動計算では、基準距離と基準時間が必要です");
+      setFormTab("basic");
+      return;
+    }
+
+    if (
+      form.timeMode === "manual" &&
+      !form.defaultMinutes.trim()
+    ) {
+      alert("標準所要時間を入力してください");
+      setFormTab("basic");
+      return;
+    }
+
+    setSaving(true);
+
+    try {
+      if (editingId) {
+        const target = drills.find((drill) => drill.id === editingId);
+
+        if (target && !canEditDrill(target)) {
+          alert("このメニューは編集できません");
+          return;
+        }
+
+        await updateDoc(doc(db, "drills", editingId), {
+          ...form,
+          updatedBy: memberId,
+          updatedAt: serverTimestamp(),
+        });
+
+        alert("練習メニューを更新しました");
+      } else {
+        await addDoc(collection(db, "drills"), {
+          ...form,
+          createdBy: memberId,
+          updatedBy: memberId,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+          isActive: true,
+        });
+
+        alert("練習メニューを登録しました");
       }
+
+      resetForm();
+      await loadDrills();
+    } catch (error) {
+      console.error("練習メニューの保存に失敗しました", error);
+      alert("保存に失敗しました");
+    } finally {
+      setSaving(false);
     }
-
-    if (form.timeMode === "manual") {
-      if (!form.defaultMinutes) {
-        return alert("手入力の場合は、標準所要時間を入力してください");
-      }
-    }
-
-    if (editingId) {
-      const target = drills.find((d) => d.id === editingId);
-      if (target && !canEditDrill(target)) {
-        return alert("このメニューは編集できません");
-      }
-
-      await updateDoc(doc(db, "drills", editingId), {
-        ...form,
-        updatedBy: memberId,
-        updatedAt: serverTimestamp(),
-      });
-
-      alert("練習メニューを更新しました");
-    } else {
-      await addDoc(collection(db, "drills"), {
-        ...form,
-        createdBy: memberId,
-        updatedBy: memberId,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-        isActive: true,
-      });
-
-      alert("練習メニューを登録しました");
-    }
-
-    resetForm();
-    await loadDrills();
   };
 
   const startEdit = (drill: Drill) => {
-    if (!canEditDrill(drill)) return alert("このメニューは編集できません");
+    if (!canEditDrill(drill)) {
+      alert("このメニューは編集できません");
+      return;
+    }
 
     setEditingId(drill.id);
     setFormTab("basic");
+
     setForm({
       name: drill.name || "",
       category: drill.category || "アップ",
       targetEvent: drill.targetEvent || "共通",
-      purposeTags: Array.isArray(drill.purposeTags) ? drill.purposeTags : [],
+      purposeTags: drill.purposeTags || [],
       description: drill.description || "",
       volume: drill.volume || "",
       caution: drill.caution || "",
@@ -298,48 +371,98 @@ export default function DrillsPage() {
       strengthPrescriptions: drill.strengthPrescriptions || [],
     });
 
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    window.scrollTo({
+      top: 0,
+      behavior: "smooth",
+    });
   };
 
   const resetForm = () => {
     setEditingId(null);
     setFormTab("basic");
-    setForm({
-      name: "",
-      category: "アップ",
-      targetEvent: "共通",
-      purposeTags: [],
-      description: "",
-      volume: "",
-      caution: "",
-      photoUrl: "",
-      videoUrl: "",
-      timeMode: "manual",
-      baseDistance: "",
-      baseSeconds: "",
-      defaultMinutes: "",
-      strengthPrescriptions: [],
+    setForm({ ...EMPTY_FORM });
+  };
+
+  const addStrengthPrescription = () => {
+    setForm((current) => ({
+      ...current,
+      strengthPrescriptions: [
+        ...current.strengthPrescriptions,
+        {
+          season: "鍛錬期",
+          purpose: "パワー",
+          percent: "",
+          reps: "",
+          sets: "",
+          restMinutes: "",
+          memo: "",
+        },
+      ],
+    }));
+  };
+
+  const updateStrengthPrescription = (
+    index: number,
+    field: keyof StrengthPrescription,
+    value: string
+  ) => {
+    setForm((current) => {
+      const next = [...current.strengthPrescriptions];
+
+      next[index] = {
+        ...next[index],
+        [field]: value,
+      };
+
+      return {
+        ...current,
+        strengthPrescriptions: next,
+      };
     });
+  };
+
+  const removeStrengthPrescription = (index: number) => {
+    setForm((current) => ({
+      ...current,
+      strengthPrescriptions: current.strengthPrescriptions.filter(
+        (_, itemIndex) => itemIndex !== index
+      ),
+    }));
   };
 
   const searchedDrills = useMemo(() => {
     const keyword = normalizeText(searchText);
+
     if (!keyword) return [];
 
-    return drills.filter((drill) => {
-      const target = normalizeText(
-        [
-          drill.name,
-          drill.category,
-          drill.targetEvent,
-          ...(drill.purposeTags || []),
-          drill.description,
-          drill.caution,
-        ].join(" ")
-      );
+    return drills
+      .filter((drill) => {
+        const target = normalizeText(
+          [
+            drill.name,
+            drill.category,
+            drill.targetEvent,
+            ...(drill.purposeTags || []),
+            drill.description || "",
+            drill.volume || "",
+            drill.caution || "",
+          ].join(" ")
+        );
 
-      return target.includes(keyword);
-    });
+        return target.includes(keyword);
+      })
+      .sort((a, b) => {
+        const aName = normalizeText(a.name);
+        const bName = normalizeText(b.name);
+
+        const aStarts = aName.startsWith(keyword);
+        const bStarts = bName.startsWith(keyword);
+
+        if (aStarts && !bStarts) return -1;
+        if (!aStarts && bStarts) return 1;
+
+        return a.name.localeCompare(b.name, "ja");
+      });
   }, [searchText, drills]);
 
   const categoryFolders = useMemo(() => {
@@ -350,10 +473,12 @@ export default function DrillsPage() {
 
   const eventFolders = useMemo(() => {
     if (!openCategory) return [];
+
     return [...EVENTS].filter((event) =>
       drills.some(
         (drill) =>
-          drill.category === openCategory && drill.targetEvent === event
+          drill.category === openCategory &&
+          drill.targetEvent === event
       )
     );
   }, [openCategory, drills]);
@@ -389,467 +514,641 @@ export default function DrillsPage() {
     setDetailId(null);
   };
 
-  const addStrengthPrescription = () => {
-    setForm({
-      ...form,
-      strengthPrescriptions: [
-        ...form.strengthPrescriptions,
-        {
-          season: "鍛錬期",
-          purpose: "パワー",
-          percent: "",
-          reps: "",
-          sets: "",
-          restMinutes: "",
-          memo: "",
-        },
-      ],
-    });
-  };
-
-  const updateStrengthPrescription = (
-    index: number,
-    field: keyof StrengthPrescription,
-    value: string
-  ) => {
-    const next = [...form.strengthPrescriptions];
-    next[index] = {
-      ...next[index],
-      [field]: value,
-    };
-
-    setForm({ ...form, strengthPrescriptions: next });
-  };
-
-  const removeStrengthPrescription = (index: number) => {
-    setForm({
-      ...form,
-      strengthPrescriptions: form.strengthPrescriptions.filter(
-        (_, i) => i !== index
-      ),
-    });
-  };
+  if (loading) {
+    return (
+      <main className="flex min-h-screen items-center justify-center bg-[#10172a] text-white">
+        <div className="text-center">
+          <div className="mx-auto h-12 w-12 animate-spin rounded-full border-4 border-white/20 border-t-cyan-400" />
+          <p className="mt-4 font-black">読み込み中...</p>
+        </div>
+      </main>
+    );
+  }
 
   return (
-    <main className="min-h-screen bg-[#f4f6fb] px-4 py-6 text-slate-900">
-      <div className="mx-auto max-w-md">
-        <p className="text-sm font-black text-blue-600">Jump Planner</p>
-        <h1 className="mt-1 text-3xl font-black">練習メニュー集</h1>
-        <p className="mt-2 text-sm font-bold text-slate-500">
-          誰でも練習を登録できます。検索・フォルダー・時期別筋トレ設定に対応しています。
-        </p>
+    <main className="relative min-h-screen overflow-hidden bg-[#10172a] px-4 py-6 text-white">
+      <div className="pointer-events-none absolute -left-28 top-10 h-72 w-72 rounded-full bg-violet-600/30 blur-[100px]" />
+      <div className="pointer-events-none absolute -right-28 top-72 h-80 w-80 rounded-full bg-pink-500/20 blur-[110px]" />
+      <div className="pointer-events-none absolute bottom-20 left-1/3 h-80 w-80 rounded-full bg-cyan-500/15 blur-[110px]" />
 
-        <section className="mt-5 rounded-[28px] bg-white p-5 shadow-sm">
-          <h2 className="text-xl font-black">
-            {editingId ? "メニュー編集" : "メニュー登録"}
-          </h2>
+      <div className="relative z-10 mx-auto max-w-5xl">
+        <header className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-xs font-black tracking-[0.28em] text-cyan-300">
+              JUMP PLANNER
+            </p>
 
-          <div className="mt-4 grid grid-cols-2 gap-3 rounded-2xl bg-slate-100 p-2">
-            <button
-              type="button"
-              onClick={() => setFormTab("basic")}
-              className={`rounded-xl py-3 text-sm font-black ${
-                formTab === "basic"
-                  ? "bg-blue-600 text-white"
-                  : "text-slate-600"
-              }`}
-            >
-              基本設定
-            </button>
+            <h1 className="mt-2 text-3xl font-black md:text-4xl">
+              練習メニュー集
+            </h1>
 
-            <button
-              type="button"
-              onClick={() => setFormTab("strength")}
-              className={`rounded-xl py-3 text-sm font-black ${
-                formTab === "strength"
-                  ? "bg-blue-600 text-white"
-                  : "text-slate-600"
-              }`}
-            >
-              筋トレ設定
-            </button>
+            <p className="mt-3 max-w-2xl text-sm font-bold leading-6 text-slate-400">
+              過去の練習を蓄積し、検索・分類・編集しながら、
+              チーム全体で練習の知識を共有できます。
+            </p>
           </div>
 
-          {formTab === "basic" && (
-            <>
-              <Input
-                label="練習名"
-                value={form.name}
-                onChange={(v) => setForm({ ...form, name: v })}
-                placeholder="例：ホップドリル"
-              />
+          <button
+            type="button"
+            onClick={() => router.push("/home")}
+            className="shrink-0 rounded-2xl border border-white/10 bg-white/[0.07] px-4 py-3 text-xs font-black text-slate-200 backdrop-blur-xl transition hover:bg-white/10"
+          >
+            ホームへ
+          </button>
+        </header>
 
-              <Select
-                label="カテゴリー"
-                value={form.category}
-                onChange={(v) => setForm({ ...form, category: v })}
-                options={categories}
-              />
+        <section className="relative mt-7 overflow-hidden rounded-[34px] border border-white/10 bg-white/[0.07] p-5 shadow-2xl backdrop-blur-2xl md:p-7">
+          <div className="pointer-events-none absolute -right-16 -top-20 h-56 w-56 rounded-full bg-gradient-to-br from-pink-500/40 to-violet-500/10 blur-3xl" />
 
-              <div className="mt-4 flex gap-2">
-                <input
-                  className="w-full rounded-2xl border border-slate-300 bg-white p-4 font-bold"
-                  value={newCategory}
-                  onChange={(e) => setNewCategory(e.target.value)}
-                  placeholder="カテゴリーを追加"
-                />
-                <button
-                  type="button"
-                  onClick={addCategory}
-                  className="shrink-0 rounded-2xl bg-slate-900 px-4 font-black text-white"
-                >
-                  追加
-                </button>
+          <div className="relative">
+            <div className="flex items-center gap-3">
+              <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-gradient-to-br from-violet-500 to-pink-500 text-xl font-black shadow-lg shadow-pink-500/20">
+                ＋
               </div>
 
-              <Select
-                label="対象種目"
-                value={form.targetEvent}
-                onChange={(v) => setForm({ ...form, targetEvent: v })}
-                options={[...EVENTS]}
-              />
-
-              <div className="mt-4">
-                <label className="text-sm font-black">
-                  目的タグ（複数選択可）
-                </label>
-                <div className="mt-2 flex flex-wrap gap-2">
-                  {tags.map((tag) => {
-                    const selected = form.purposeTags.includes(tag);
-
-                    return (
-                      <button
-                        key={tag}
-                        type="button"
-                        onClick={() => toggleTag(tag)}
-                        className={`rounded-full px-4 py-2 text-sm font-black ${
-                          selected
-                            ? "bg-blue-600 text-white"
-                            : "bg-slate-100 text-slate-700"
-                        }`}
-                      >
-                        {tag}
-                      </button>
-                    );
-                  })}
-                </div>
-
-                <div className="mt-4 flex gap-2">
-                  <input
-                    className="w-full rounded-2xl border border-slate-300 bg-white p-4 font-bold"
-                    value={newTag}
-                    onChange={(e) => setNewTag(e.target.value)}
-                    placeholder="タグを追加"
-                  />
-                  <button
-                    type="button"
-                    onClick={addTag}
-                    className="shrink-0 rounded-2xl bg-slate-900 px-4 font-black text-white"
-                  >
-                    追加
-                  </button>
-                </div>
-              </div>
-
-              <Textarea
-                label="やり方"
-                value={form.description}
-                onChange={(v) => setForm({ ...form, description: v })}
-                placeholder="練習の進め方を書いてください"
-              />
-
-              <Input
-                label="基本の本数・セット数"
-                value={form.volume}
-                onChange={(v) => setForm({ ...form, volume: v })}
-                placeholder="例：30m×3本、3セット"
-              />
-
-              <section className="mt-5 rounded-2xl bg-slate-100 p-4">
-                <h3 className="font-black">所要時間の設定</h3>
-                <p className="mt-1 text-xs font-bold text-slate-500">
-                  仮メニュー作成時に終了予定時刻を計算するための基準です。
+              <div>
+                <p className="text-xs font-black tracking-[0.2em] text-violet-200">
+                  DRILL LIBRARY
                 </p>
+                <h2 className="mt-1 text-2xl font-black">
+                  {editingId ? "メニューを編集" : "新しい練習を登録"}
+                </h2>
+              </div>
+            </div>
 
-                <Select
-                  label="所要時間の設定方法"
-                  value={form.timeMode}
-                  onChange={(v) =>
-                    setForm({ ...form, timeMode: v as TimeMode })
+            <div className="mt-5 grid grid-cols-2 gap-2 rounded-2xl border border-white/10 bg-black/20 p-2">
+              <button
+                type="button"
+                onClick={() => setFormTab("basic")}
+                className={`rounded-xl py-3 text-sm font-black transition ${
+                  formTab === "basic"
+                    ? "bg-gradient-to-r from-cyan-500 to-blue-600 text-white shadow-lg shadow-cyan-500/20"
+                    : "text-slate-400 hover:bg-white/5 hover:text-white"
+                }`}
+              >
+                基本設定
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setFormTab("strength")}
+                className={`rounded-xl py-3 text-sm font-black transition ${
+                  formTab === "strength"
+                    ? "bg-gradient-to-r from-violet-500 to-pink-500 text-white shadow-lg shadow-pink-500/20"
+                    : "text-slate-400 hover:bg-white/5 hover:text-white"
+                }`}
+              >
+                筋トレ設定
+              </button>
+            </div>
+
+            {formTab === "basic" && (
+              <div className="mt-5">
+                <GlassInput
+                  label="練習名"
+                  value={form.name}
+                  onChange={(value) =>
+                    setForm((current) => ({
+                      ...current,
+                      name: value,
+                    }))
                   }
-                  options={["manual", "auto"]}
+                  placeholder="例：バウンディング"
                 />
 
-                {form.timeMode === "auto" ? (
-                  <>
-                    <Input
-                      label="基準距離（m）"
-                      value={form.baseDistance}
-                      onChange={(v) =>
-                        setForm({ ...form, baseDistance: v })
-                      }
-                      placeholder="例：100"
-                    />
+                <GlassSelect
+                  label="カテゴリー"
+                  value={form.category}
+                  onChange={(value) =>
+                    setForm((current) => ({
+                      ...current,
+                      category: value,
+                    }))
+                  }
+                  options={categories}
+                />
 
-                    <Input
-                      label="基準時間（秒）"
-                      value={form.baseSeconds}
-                      onChange={(v) =>
-                        setForm({ ...form, baseSeconds: v })
-                      }
-                      placeholder="例：20"
-                    />
+                <InlineAdd
+                  value={newCategory}
+                  onChange={setNewCategory}
+                  onAdd={addCategory}
+                  placeholder="新しいカテゴリー"
+                  buttonLabel="追加"
+                />
 
-                    <p className="mt-2 text-xs font-bold leading-5 text-slate-500">
-                      例：100mを20秒で行う練習なら、300mでは約60秒として計算します。
-                    </p>
-                  </>
-                ) : (
-                  <>
-                    <Input
+                <GlassSelect
+                  label="対象種目"
+                  value={form.targetEvent}
+                  onChange={(value) =>
+                    setForm((current) => ({
+                      ...current,
+                      targetEvent: value,
+                    }))
+                  }
+                  options={[...EVENTS]}
+                />
+
+                <div className="mt-5">
+                  <label className="text-sm font-black text-slate-200">
+                    目的タグ
+                  </label>
+
+                  <p className="mt-1 text-xs font-bold text-slate-500">
+                    複数選択できます。
+                  </p>
+
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {tags.map((tag) => {
+                      const selected = form.purposeTags.includes(tag);
+
+                      return (
+                        <button
+                          key={tag}
+                          type="button"
+                          onClick={() => toggleTag(tag)}
+                          className={`rounded-full border px-4 py-2 text-xs font-black transition ${
+                            selected
+                              ? "border-cyan-300/50 bg-cyan-400/20 text-cyan-200 shadow-lg shadow-cyan-500/10"
+                              : "border-white/10 bg-white/[0.05] text-slate-400 hover:bg-white/10 hover:text-white"
+                          }`}
+                        >
+                          {selected ? "✓ " : ""}
+                          {tag}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <InlineAdd
+                    value={newTag}
+                    onChange={setNewTag}
+                    onAdd={addTag}
+                    placeholder="新しいタグ"
+                    buttonLabel="追加"
+                  />
+                </div>
+
+                <GlassTextarea
+                  label="やり方"
+                  value={form.description}
+                  onChange={(value) =>
+                    setForm((current) => ({
+                      ...current,
+                      description: value,
+                    }))
+                  }
+                  placeholder="練習の進め方、意識する動きなど"
+                />
+
+                <GlassInput
+                  label="基本の本数・セット数"
+                  value={form.volume}
+                  onChange={(value) =>
+                    setForm((current) => ({
+                      ...current,
+                      volume: value,
+                    }))
+                  }
+                  placeholder="例：30m×3本、2セット"
+                />
+
+                <section className="mt-6 rounded-[26px] border border-cyan-300/15 bg-cyan-400/[0.06] p-4">
+                  <div className="flex items-center gap-3">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-cyan-400/15 text-lg text-cyan-300">
+                      ◷
+                    </div>
+
+                    <div>
+                      <h3 className="font-black">所要時間の設定</h3>
+                      <p className="mt-1 text-xs font-bold text-slate-500">
+                        週メニュー作成時の終了予定計算に使用します。
+                      </p>
+                    </div>
+                  </div>
+
+                  <GlassSelect
+                    label="計算方法"
+                    value={form.timeMode}
+                    onChange={(value) =>
+                      setForm((current) => ({
+                        ...current,
+                        timeMode: value as TimeMode,
+                      }))
+                    }
+                    options={["manual", "auto"]}
+                    optionLabels={{
+                      manual: "標準時間を登録",
+                      auto: "距離と時間から自動計算",
+                    }}
+                  />
+
+                  {form.timeMode === "auto" ? (
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <GlassInput
+                        label="基準距離（m）"
+                        value={form.baseDistance}
+                        onChange={(value) =>
+                          setForm((current) => ({
+                            ...current,
+                            baseDistance: value,
+                          }))
+                        }
+                        placeholder="例：100"
+                      />
+
+                      <GlassInput
+                        label="基準時間（秒）"
+                        value={form.baseSeconds}
+                        onChange={(value) =>
+                          setForm((current) => ({
+                            ...current,
+                            baseSeconds: value,
+                          }))
+                        }
+                        placeholder="例：20"
+                      />
+                    </div>
+                  ) : (
+                    <GlassInput
                       label="標準所要時間（分）"
                       value={form.defaultMinutes}
-                      onChange={(v) =>
-                        setForm({ ...form, defaultMinutes: v })
+                      onChange={(value) =>
+                        setForm((current) => ({
+                          ...current,
+                          defaultMinutes: value,
+                        }))
                       }
                       placeholder="例：15"
                     />
+                  )}
+                </section>
 
-                    <p className="mt-2 text-xs font-bold leading-5 text-slate-500">
-                      技術練習や跳躍練習など、日によって変わる練習は仮メニュー作成時に調整できます。
+                <GlassTextarea
+                  label="注意点"
+                  value={form.caution}
+                  onChange={(value) =>
+                    setForm((current) => ({
+                      ...current,
+                      caution: value,
+                    }))
+                  }
+                  placeholder="怪我防止、フォーム上の注意など"
+                />
+
+                <div className="grid gap-3 md:grid-cols-2">
+                  <GlassInput
+                    label="写真URL（任意）"
+                    value={form.photoUrl}
+                    onChange={(value) =>
+                      setForm((current) => ({
+                        ...current,
+                        photoUrl: value,
+                      }))
+                    }
+                    placeholder="https://..."
+                  />
+
+                  <GlassInput
+                    label="動画URL（任意）"
+                    value={form.videoUrl}
+                    onChange={(value) =>
+                      setForm((current) => ({
+                        ...current,
+                        videoUrl: value,
+                      }))
+                    }
+                    placeholder="https://..."
+                  />
+                </div>
+              </div>
+            )}
+
+            {formTab === "strength" && (
+              <div className="mt-5">
+                <div className="rounded-[26px] border border-violet-300/15 bg-violet-400/[0.06] p-4">
+                  <p className="text-xs font-black tracking-[0.2em] text-violet-300">
+                    STRENGTH PRESET
+                  </p>
+
+                  <h3 className="mt-2 text-xl font-black">
+                    時期別の推奨メニュー
+                  </h3>
+
+                  <p className="mt-2 text-sm font-bold leading-6 text-slate-400">
+                    冬季練習期、鍛錬期、試合準備期、試合期ごとに、
+                    MAXの割合・本数・セット数・レストを登録できます。
+                  </p>
+
+                  {form.category !== "筋トレ" && (
+                    <p className="mt-4 rounded-2xl border border-amber-400/20 bg-amber-400/10 p-3 text-xs font-bold leading-5 text-amber-200">
+                      現在のカテゴリーは「{form.category}」です。
+                      筋トレ種目の場合は、基本設定でカテゴリーを「筋トレ」にしてください。
                     </p>
-                  </>
-                )}
-              </section>
+                  )}
 
-              <Textarea
-                label="注意点"
-                value={form.caution}
-                onChange={(v) => setForm({ ...form, caution: v })}
-                placeholder="意識するポイントや怪我防止の注意"
-              />
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setForm((current) => ({
+                        ...current,
+                        strengthPrescriptions:
+                          DEFAULT_STRENGTH_PRESCRIPTIONS.map((item) => ({
+                            ...item,
+                          })),
+                      }))
+                    }
+                    className="mt-4 w-full rounded-2xl bg-gradient-to-r from-violet-500 to-pink-500 py-4 font-black text-white shadow-lg shadow-pink-500/20"
+                  >
+                    標準テンプレートを入れる
+                  </button>
+                </div>
 
-              <Input
-                label="写真URL（任意）"
-                value={form.photoUrl}
-                onChange={(v) => setForm({ ...form, photoUrl: v })}
-                placeholder="https://..."
-              />
+                <div className="mt-4 space-y-4">
+                  {form.strengthPrescriptions.map((preset, index) => (
+                    <div
+                      key={`${preset.season}-${index}`}
+                      className="rounded-[26px] border border-white/10 bg-black/20 p-4"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div>
+                          <p className="text-xs font-black text-violet-300">
+                            設定 {index + 1}
+                          </p>
+                          <h4 className="mt-1 font-black">
+                            {preset.season} / {preset.purpose}
+                          </h4>
+                        </div>
 
-              <Input
-                label="動画URL（任意）"
-                value={form.videoUrl}
-                onChange={(v) => setForm({ ...form, videoUrl: v })}
-                placeholder="https://..."
-              />
-            </>
-          )}
+                        <button
+                          type="button"
+                          onClick={() =>
+                            removeStrengthPrescription(index)
+                          }
+                          className="rounded-full border border-rose-400/20 bg-rose-400/10 px-3 py-2 text-xs font-black text-rose-300"
+                        >
+                          削除
+                        </button>
+                      </div>
 
-          {formTab === "strength" && (
-            <section className="mt-5">
-              <h3 className="text-xl font-black">時期別の推奨メニュー</h3>
-              <p className="mt-2 text-xs font-bold text-slate-500">
-                筋トレ種目の場合、冬季・鍛錬期・試合期などでMAXの何％、本数、セット数を登録できます。
-              </p>
+                      <div className="mt-2 grid gap-3 md:grid-cols-2">
+                        <GlassSelect
+                          label="時期"
+                          value={preset.season}
+                          onChange={(value) =>
+                            updateStrengthPrescription(
+                              index,
+                              "season",
+                              value as TrainingSeason
+                            )
+                          }
+                          options={TRAINING_SEASONS}
+                        />
 
-              {form.category !== "筋トレ" && (
-                <p className="mt-3 rounded-2xl bg-yellow-50 p-3 text-xs font-bold leading-5 text-yellow-700">
-                  現在のカテゴリーは「{form.category}」です。筋トレ種目として使う場合は、基本設定でカテゴリーを「筋トレ」にしてください。
-                </p>
-              )}
+                        <GlassSelect
+                          label="目的"
+                          value={preset.purpose}
+                          onChange={(value) =>
+                            updateStrengthPrescription(
+                              index,
+                              "purpose",
+                              value as WeightPurpose
+                            )
+                          }
+                          options={WEIGHT_PURPOSES}
+                        />
 
-              <button
-                type="button"
-                onClick={() =>
-                  setForm({
-                    ...form,
-                    strengthPrescriptions: DEFAULT_STRENGTH_PRESCRIPTIONS,
-                  })
-                }
-                className="mt-4 w-full rounded-2xl bg-blue-600 py-3 font-black text-white"
-              >
-                標準テンプレートを入れる
-              </button>
+                        <GlassInput
+                          label="MAXの何％"
+                          value={preset.percent}
+                          onChange={(value) =>
+                            updateStrengthPrescription(
+                              index,
+                              "percent",
+                              value
+                            )
+                          }
+                          placeholder="例：70〜85"
+                        />
 
-              <div className="mt-4 space-y-4">
-                {form.strengthPrescriptions.map((p, index) => (
-                  <div key={index} className="rounded-2xl bg-slate-100 p-4">
-                    <div className="grid grid-cols-2 gap-3">
-                      <Select
-                        label="時期"
-                        value={p.season}
-                        onChange={(v) =>
+                        <GlassInput
+                          label="本数"
+                          value={preset.reps}
+                          onChange={(value) =>
+                            updateStrengthPrescription(
+                              index,
+                              "reps",
+                              value
+                            )
+                          }
+                          placeholder="例：3〜5"
+                        />
+
+                        <GlassInput
+                          label="セット数"
+                          value={preset.sets}
+                          onChange={(value) =>
+                            updateStrengthPrescription(
+                              index,
+                              "sets",
+                              value
+                            )
+                          }
+                          placeholder="例：3〜4"
+                        />
+
+                        <GlassInput
+                          label="セット間レスト（分）"
+                          value={preset.restMinutes}
+                          onChange={(value) =>
+                            updateStrengthPrescription(
+                              index,
+                              "restMinutes",
+                              value
+                            )
+                          }
+                          placeholder="例：3"
+                        />
+                      </div>
+
+                      <GlassTextarea
+                        label="メモ"
+                        value={preset.memo || ""}
+                        onChange={(value) =>
                           updateStrengthPrescription(
                             index,
-                            "season",
-                            v as TrainingSeason
+                            "memo",
+                            value
                           )
                         }
-                        options={SEASONS}
-                      />
-
-                      <Select
-                        label="目的"
-                        value={p.purpose}
-                        onChange={(v) =>
-                          updateStrengthPrescription(
-                            index,
-                            "purpose",
-                            v as WeightPurpose
-                          )
-                        }
-                        options={PURPOSES}
-                      />
-
-                      <Input
-                        label="MAXの何％"
-                        value={p.percent}
-                        onChange={(v) =>
-                          updateStrengthPrescription(index, "percent", v)
-                        }
-                        placeholder="例：70〜85"
-                      />
-
-                      <Input
-                        label="本数"
-                        value={p.reps}
-                        onChange={(v) =>
-                          updateStrengthPrescription(index, "reps", v)
-                        }
-                        placeholder="例：3〜5"
-                      />
-
-                      <Input
-                        label="セット"
-                        value={p.sets}
-                        onChange={(v) =>
-                          updateStrengthPrescription(index, "sets", v)
-                        }
-                        placeholder="例：3〜4"
-                      />
-
-                      <Input
-                        label="レスト分"
-                        value={p.restMinutes}
-                        onChange={(v) =>
-                          updateStrengthPrescription(
-                            index,
-                            "restMinutes",
-                            v
-                          )
-                        }
-                        placeholder="例：3"
+                        placeholder="例：スピードを落とさない。疲労を残さない。"
                       />
                     </div>
+                  ))}
+                </div>
 
-                    <Textarea
-                      label="メモ"
-                      value={p.memo || ""}
-                      onChange={(v) =>
-                        updateStrengthPrescription(index, "memo", v)
-                      }
-                      placeholder="例：スピード重視、疲労を残さない"
-                    />
-
-                    <button
-                      type="button"
-                      onClick={() => removeStrengthPrescription(index)}
-                      className="mt-3 w-full rounded-2xl bg-red-100 py-3 font-black text-red-600"
-                    >
-                      この設定を削除
-                    </button>
+                {form.strengthPrescriptions.length === 0 && (
+                  <div className="mt-4 rounded-[26px] border border-dashed border-white/15 bg-white/[0.03] p-6 text-center">
+                    <p className="font-black text-slate-300">
+                      まだ筋トレ設定がありません
+                    </p>
+                    <p className="mt-2 text-xs font-bold text-slate-500">
+                      標準テンプレートを入れるか、新しく追加してください。
+                    </p>
                   </div>
+                )}
+
+                <button
+                  type="button"
+                  onClick={addStrengthPrescription}
+                  className="mt-4 w-full rounded-2xl border border-white/10 bg-white/[0.07] py-4 font-black text-white transition hover:bg-white/10"
+                >
+                  ＋ 推奨メニューを追加
+                </button>
+              </div>
+            )}
+
+            <div className="mt-6 grid gap-3 md:grid-cols-2">
+              <button
+                type="button"
+                disabled={saving}
+                onClick={saveDrill}
+                className="rounded-2xl bg-gradient-to-r from-cyan-500 via-blue-600 to-violet-600 py-4 font-black text-white shadow-xl shadow-blue-500/20 transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                {saving
+                  ? "保存中..."
+                  : editingId
+                    ? "変更を保存"
+                    : "メニューを登録"}
+              </button>
+
+              {editingId && (
+                <button
+                  type="button"
+                  onClick={resetForm}
+                  className="rounded-2xl border border-white/10 bg-white/[0.06] py-4 font-black text-slate-200 transition hover:bg-white/10"
+                >
+                  編集をキャンセル
+                </button>
+              )}
+            </div>
+          </div>
+        </section>
+
+        <section className="mt-6 rounded-[32px] border border-white/10 bg-white/[0.07] p-5 shadow-2xl backdrop-blur-2xl md:p-6">
+          <div className="flex items-center gap-3">
+            <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-cyan-400 to-blue-600 text-xl shadow-lg shadow-cyan-500/20">
+              ⌕
+            </div>
+
+            <div>
+              <p className="text-xs font-black tracking-[0.2em] text-cyan-300">
+                SEARCH
+              </p>
+              <h2 className="mt-1 text-xl font-black">メニュー検索</h2>
+            </div>
+          </div>
+
+          <div className="relative mt-5">
+            <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-lg text-slate-500">
+              ⌕
+            </span>
+
+            <input
+              value={searchText}
+              onChange={(event) => {
+                setSearchText(event.target.value);
+                setDetailId(null);
+              }}
+              placeholder="練習名・カテゴリー・タグで検索"
+              className="w-full rounded-2xl border border-white/10 bg-black/20 py-4 pl-12 pr-12 font-bold text-white outline-none placeholder:text-slate-600 focus:border-cyan-400/50 focus:ring-4 focus:ring-cyan-500/10"
+            />
+
+            {searchText && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchText("");
+                  setDetailId(null);
+                }}
+                className="absolute right-4 top-1/2 -translate-y-1/2 text-sm font-black text-slate-500 hover:text-white"
+              >
+                ×
+              </button>
+            )}
+          </div>
+
+          {searchText.trim() && (
+            <div className="mt-4">
+              <p className="text-xs font-black text-slate-500">
+                {searchedDrills.length}件のメニューが見つかりました
+              </p>
+
+              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                {searchedDrills.map((drill) => (
+                  <DrillCard
+                    key={drill.id}
+                    drill={drill}
+                    detailId={detailId}
+                    setDetailId={setDetailId}
+                    canEdit={canEditDrill(drill)}
+                    onEdit={() => startEdit(drill)}
+                  />
                 ))}
               </div>
 
-              <button
-                type="button"
-                onClick={addStrengthPrescription}
-                className="mt-4 w-full rounded-2xl bg-slate-900 py-3 font-black text-white"
-              >
-                推奨メニューを追加
-              </button>
-            </section>
-          )}
-
-          <button
-            onClick={saveDrill}
-            className="mt-5 w-full rounded-2xl bg-blue-600 py-4 font-black text-white"
-          >
-            {editingId ? "変更を保存" : "登録する"}
-          </button>
-
-          {editingId && (
-            <button
-              onClick={resetForm}
-              className="mt-3 w-full rounded-2xl bg-slate-200 py-4 font-black text-slate-700"
-            >
-              キャンセル
-            </button>
-          )}
-        </section>
-
-        <section className="mt-5 rounded-[28px] bg-white p-5 shadow-sm">
-          <h2 className="text-xl font-black">メニュー検索</h2>
-          <input
-            className="mt-4 w-full rounded-2xl border border-slate-300 bg-white p-4 font-bold"
-            value={searchText}
-            onChange={(e) => setSearchText(e.target.value)}
-            placeholder="練習名・カテゴリー・タグで検索"
-          />
-
-          {searchText.trim() && (
-            <div className="mt-4 space-y-3">
-              {searchedDrills.map((drill) => (
-                <DrillCard
-                  key={drill.id}
-                  drill={drill}
-                  detailId={detailId}
-                  setDetailId={setDetailId}
-                  canEdit={canEditDrill(drill)}
-                  onEdit={() => startEdit(drill)}
-                />
-              ))}
-
               {searchedDrills.length === 0 && (
-                <p className="text-sm font-bold text-slate-500">
-                  一致するメニューがありません。
-                </p>
+                <EmptyState message="一致するメニューがありません" />
               )}
             </div>
           )}
         </section>
 
-        <section className="mt-5 rounded-[28px] bg-white p-5 shadow-sm">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-xl font-black">登録済みメニュー</h2>
-              <p className="mt-1 text-xs font-bold text-slate-500">
-                カテゴリー → 対象種目 → タグ の順に開きます。
-              </p>
+        <section className="mt-6 rounded-[32px] border border-white/10 bg-white/[0.07] p-5 shadow-2xl backdrop-blur-2xl md:p-6">
+          <div className="flex items-start justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br from-violet-500 to-pink-500 text-xl shadow-lg shadow-pink-500/20">
+                ▣
+              </div>
+
+              <div>
+                <p className="text-xs font-black tracking-[0.2em] text-violet-300">
+                  LIBRARY
+                </p>
+                <h2 className="mt-1 text-xl font-black">
+                  登録済みメニュー
+                </h2>
+              </div>
             </div>
 
             {(openCategory || openEvent || openTag) && (
               <button
+                type="button"
                 onClick={resetFolders}
-                className="rounded-full bg-slate-100 px-3 py-2 text-xs font-black"
+                className="rounded-full border border-white/10 bg-white/[0.06] px-4 py-2 text-xs font-black text-slate-300 hover:bg-white/10"
               >
                 最初へ
               </button>
             )}
           </div>
 
-          <div className="mt-4 rounded-2xl bg-slate-100 p-3 text-xs font-bold text-slate-600">
-            現在：
-            {openCategory ? ` ${openCategory}` : " カテゴリー選択"}
-            {openEvent ? ` / ${openEvent}` : ""}
-            {openTag ? ` / ${openTag}` : ""}
+          <div className="mt-5 rounded-2xl border border-white/10 bg-black/20 p-4">
+            <p className="text-xs font-black text-slate-500">
+              現在の場所
+            </p>
+
+            <p className="mt-2 text-sm font-black text-slate-200">
+              メニュー集
+              {openCategory ? ` / ${openCategory}` : ""}
+              {openEvent ? ` / ${openEvent}` : ""}
+              {openTag ? ` / ${openTag}` : ""}
+            </p>
           </div>
 
           {!openCategory && (
-            <FolderList
+            <FolderGrid
               title="カテゴリー"
               items={categoryFolders}
+              icon="◆"
               onClick={(item) => {
                 setOpenCategory(item);
                 setOpenEvent(null);
@@ -862,7 +1161,7 @@ export default function DrillsPage() {
           {openCategory && !openEvent && (
             <>
               <BackButton
-                label="カテゴリーに戻る"
+                label="カテゴリーへ戻る"
                 onClick={() => {
                   setOpenCategory(null);
                   setOpenEvent(null);
@@ -871,9 +1170,10 @@ export default function DrillsPage() {
                 }}
               />
 
-              <FolderList
+              <FolderGrid
                 title="対象種目"
                 items={eventFolders}
+                icon="↗"
                 onClick={(item) => {
                   setOpenEvent(item);
                   setOpenTag(null);
@@ -886,7 +1186,7 @@ export default function DrillsPage() {
           {openCategory && openEvent && !openTag && (
             <>
               <BackButton
-                label="対象種目に戻る"
+                label="対象種目へ戻る"
                 onClick={() => {
                   setOpenEvent(null);
                   setOpenTag(null);
@@ -894,9 +1194,10 @@ export default function DrillsPage() {
                 }}
               />
 
-              <FolderList
+              <FolderGrid
                 title="目的タグ"
                 items={tagFolders}
+                icon="#"
                 onClick={(item) => {
                   setOpenTag(item);
                   setDetailId(null);
@@ -908,14 +1209,14 @@ export default function DrillsPage() {
           {openCategory && openEvent && openTag && (
             <>
               <BackButton
-                label="タグに戻る"
+                label="タグへ戻る"
                 onClick={() => {
                   setOpenTag(null);
                   setDetailId(null);
                 }}
               />
 
-              <div className="mt-4 space-y-3">
+              <div className="mt-5 grid gap-3 md:grid-cols-2">
                 {displayedDrills.map((drill) => (
                   <DrillCard
                     key={drill.id}
@@ -926,23 +1227,26 @@ export default function DrillsPage() {
                     onEdit={() => startEdit(drill)}
                   />
                 ))}
-
-                {displayedDrills.length === 0 && (
-                  <p className="text-sm font-bold text-slate-500">
-                    このフォルダーにはメニューがありません。
-                  </p>
-                )}
               </div>
+
+              {displayedDrills.length === 0 && (
+                <EmptyState message="このフォルダーにはメニューがありません" />
+              )}
             </>
           )}
         </section>
 
         <button
+          type="button"
           onClick={() => router.push("/home")}
-          className="mt-5 w-full rounded-2xl bg-slate-900 py-4 font-black text-white"
+          className="mt-6 w-full rounded-2xl border border-white/10 bg-white/[0.07] py-4 font-black text-slate-200 backdrop-blur-xl transition hover:bg-white/10"
         >
           ホームへ戻る
         </button>
+
+        <p className="mt-8 pb-4 text-center text-xs font-bold text-slate-600">
+          Jump Planner / Training Library
+        </p>
       </div>
     </main>
   );
@@ -964,118 +1268,133 @@ function DrillCard({
   const open = detailId === drill.id;
 
   return (
-    <div className="rounded-2xl bg-slate-100 p-4">
+    <article className="overflow-hidden rounded-[26px] border border-white/10 bg-black/20 p-4 transition hover:border-cyan-300/20 hover:bg-white/[0.06]">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="font-black">{drill.name}</p>
-          <p className="mt-1 text-xs font-bold text-slate-500">
-            {drill.category} / {drill.targetEvent}
-          </p>
+          <div className="flex flex-wrap gap-2">
+            <span className="rounded-full bg-cyan-400/10 px-3 py-1 text-[10px] font-black text-cyan-300">
+              {drill.category}
+            </span>
+
+            <span className="rounded-full bg-violet-400/10 px-3 py-1 text-[10px] font-black text-violet-300">
+              {drill.targetEvent}
+            </span>
+          </div>
+
+          <h3 className="mt-3 text-lg font-black text-white">
+            {drill.name}
+          </h3>
         </div>
 
         <button
+          type="button"
           onClick={() => setDetailId(open ? null : drill.id)}
-          className="rounded-full bg-slate-900 px-3 py-2 text-xs font-black text-white"
+          className="shrink-0 rounded-full border border-white/10 bg-white/[0.06] px-3 py-2 text-xs font-black text-slate-300 transition hover:bg-white/10"
         >
           {open ? "閉じる" : "詳細"}
         </button>
       </div>
 
-      {drill.purposeTags && drill.purposeTags.length > 0 && (
-        <div className="mt-3 flex flex-wrap gap-2">
-          {drill.purposeTags.map((tag) => (
+      {(drill.purposeTags?.length ?? 0) > 0 && (
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          {drill.purposeTags?.map((tag) => (
             <span
               key={tag}
-              className="rounded-full bg-blue-50 px-3 py-1 text-xs font-black text-blue-600"
+              className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[10px] font-bold text-slate-400"
             >
-              {tag}
+              #{tag}
             </span>
           ))}
         </div>
       )}
 
+      <div className="mt-4 grid grid-cols-2 gap-2">
+        <MiniInfo
+          label="時間方式"
+          value={drill.timeMode === "auto" ? "自動計算" : "標準時間"}
+        />
+
+        <MiniInfo
+          label="基準"
+          value={
+            drill.timeMode === "auto"
+              ? `${drill.baseDistance || "-"}m / ${
+                  drill.baseSeconds || "-"
+                }秒`
+              : `${drill.defaultMinutes || "-"}分`
+          }
+        />
+      </div>
+
       {open && (
-        <div className="mt-4 rounded-2xl bg-white p-4">
-          {drill.description && (
-            <>
-              <p className="text-xs font-black text-slate-500">やり方</p>
-              <p className="mt-1 text-sm leading-6">{drill.description}</p>
-            </>
-          )}
+        <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+          <DetailText
+            label="やり方"
+            value={drill.description}
+          />
 
-          {drill.volume && (
-            <>
-              <p className="mt-4 text-xs font-black text-slate-500">
-                基本の本数・セット数
-              </p>
-              <p className="mt-1 text-sm font-bold">{drill.volume}</p>
-            </>
-          )}
+          <DetailText
+            label="基本の本数・セット数"
+            value={drill.volume}
+          />
 
-          <div className="mt-4 rounded-xl bg-slate-100 p-3">
-            <p className="text-xs font-black text-slate-500">所要時間</p>
-            {drill.timeMode === "auto" ? (
-              <p className="mt-1 text-sm font-bold">
-                自動計算：基準 {drill.baseDistance || "-"}m /{" "}
-                {drill.baseSeconds || "-"}秒
-              </p>
-            ) : (
-              <p className="mt-1 text-sm font-bold">
-                標準 {drill.defaultMinutes || "-"}分
-              </p>
-            )}
-          </div>
+          <DetailText
+            label="注意点"
+            value={drill.caution}
+          />
 
-          {drill.strengthPrescriptions &&
-            drill.strengthPrescriptions.length > 0 && (
-              <div className="mt-4 rounded-xl bg-blue-50 p-3">
-                <p className="text-xs font-black text-blue-600">
-                  時期別筋トレ設定
-                </p>
-                <div className="mt-2 space-y-2">
-                  {drill.strengthPrescriptions.map((p, index) => (
-                    <div key={index} className="rounded-xl bg-white p-3">
-                      <p className="text-sm font-black">
-                        {p.season} / {p.purpose}
+          {(drill.strengthPrescriptions?.length ?? 0) > 0 && (
+            <div className="mt-5">
+              <p className="text-xs font-black tracking-wider text-violet-300">
+                時期別筋トレ設定
+              </p>
+
+              <div className="mt-3 space-y-2">
+                {drill.strengthPrescriptions?.map((preset, index) => (
+                  <div
+                    key={`${preset.season}-${index}`}
+                    className="rounded-2xl border border-violet-300/10 bg-violet-400/[0.06] p-3"
+                  >
+                    <p className="text-sm font-black">
+                      {preset.season} / {preset.purpose}
+                    </p>
+
+                    <p className="mt-1 text-xs font-bold leading-5 text-slate-400">
+                      MAX {preset.percent}% / {preset.reps}回 /{" "}
+                      {preset.sets}セット / レスト{" "}
+                      {preset.restMinutes}分
+                    </p>
+
+                    {preset.memo && (
+                      <p className="mt-2 text-xs font-bold leading-5 text-slate-500">
+                        {preset.memo}
                       </p>
-                      <p className="mt-1 text-xs font-bold text-slate-600">
-                        {p.percent}% / {p.reps}回 / {p.sets}セット / レスト
-                        {p.restMinutes}分
-                      </p>
-                      {p.memo && (
-                        <p className="mt-1 text-xs font-bold text-slate-500">
-                          {p.memo}
-                        </p>
-                      )}
-                    </div>
-                  ))}
-                </div>
+                    )}
+                  </div>
+                ))}
               </div>
-            )}
-
-          {drill.caution && (
-            <>
-              <p className="mt-4 text-xs font-black text-slate-500">注意点</p>
-              <p className="mt-1 text-sm leading-6">{drill.caution}</p>
-            </>
+            </div>
           )}
 
           {(drill.photoUrl || drill.videoUrl) && (
-            <div className="mt-4 flex gap-3">
+            <div className="mt-5 grid grid-cols-2 gap-2">
               {drill.photoUrl && (
                 <a
                   href={drill.photoUrl}
                   target="_blank"
-                  className="text-xs font-black text-blue-600 underline"
+                  rel="noreferrer"
+                  className="rounded-2xl border border-cyan-300/20 bg-cyan-400/10 py-3 text-center text-xs font-black text-cyan-300"
                 >
                   写真を見る
                 </a>
               )}
+
               {drill.videoUrl && (
                 <a
                   href={drill.videoUrl}
                   target="_blank"
-                  className="text-xs font-black text-blue-600 underline"
+                  rel="noreferrer"
+                  className="rounded-2xl border border-pink-300/20 bg-pink-400/10 py-3 text-center text-xs font-black text-pink-300"
                 >
                   動画を見る
                 </a>
@@ -1085,48 +1404,60 @@ function DrillCard({
 
           {canEdit && (
             <button
+              type="button"
               onClick={onEdit}
-              className="mt-4 w-full rounded-2xl bg-blue-600 py-3 font-black text-white"
+              className="mt-5 w-full rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 py-3 font-black text-white shadow-lg shadow-cyan-500/20"
             >
               このメニューを編集
             </button>
           )}
         </div>
       )}
-    </div>
+    </article>
   );
 }
 
-function FolderList({
+function FolderGrid({
   title,
   items,
+  icon,
   onClick,
 }: {
   title: string;
   items: string[];
+  icon: string;
   onClick: (item: string) => void;
 }) {
   return (
-    <div className="mt-4">
-      <h3 className="text-sm font-black text-slate-500">{title}</h3>
-      <div className="mt-3 space-y-3">
+    <div className="mt-5">
+      <h3 className="text-sm font-black text-slate-400">{title}</h3>
+
+      <div className="mt-3 grid gap-3 md:grid-cols-2">
         {items.map((item) => (
           <button
             key={item}
+            type="button"
             onClick={() => onClick(item)}
-            className="flex w-full items-center justify-between rounded-2xl bg-slate-100 p-4 text-left"
+            className="group flex w-full items-center justify-between rounded-[24px] border border-white/10 bg-black/20 p-4 text-left transition hover:-translate-y-0.5 hover:border-violet-300/30 hover:bg-white/[0.07]"
           >
-            <span className="font-black">📁 {item}</span>
-            <span className="text-sm font-black text-slate-400">›</span>
+            <div className="flex items-center gap-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-2xl bg-gradient-to-br from-violet-500/80 to-pink-500/80 text-sm font-black shadow-lg shadow-pink-500/10">
+                {icon}
+              </div>
+
+              <span className="font-black text-white">{item}</span>
+            </div>
+
+            <span className="text-xl text-slate-500 transition group-hover:translate-x-1 group-hover:text-violet-300">
+              →
+            </span>
           </button>
         ))}
-
-        {items.length === 0 && (
-          <p className="text-sm font-bold text-slate-500">
-            まだフォルダーがありません。
-          </p>
-        )}
       </div>
+
+      {items.length === 0 && (
+        <EmptyState message="まだフォルダーがありません" />
+      )}
     </div>
   );
 }
@@ -1140,15 +1471,16 @@ function BackButton({
 }) {
   return (
     <button
+      type="button"
       onClick={onClick}
-      className="mt-4 rounded-full bg-slate-100 px-4 py-2 text-xs font-black text-slate-700"
+      className="mt-5 rounded-full border border-white/10 bg-white/[0.06] px-4 py-2 text-xs font-black text-slate-300 hover:bg-white/10"
     >
       ← {label}
     </button>
   );
 }
 
-function Input({
+function GlassInput({
   label,
   value,
   onChange,
@@ -1156,23 +1488,24 @@ function Input({
 }: {
   label: string;
   value: string;
-  onChange: (v: string) => void;
+  onChange: (value: string) => void;
   placeholder?: string;
 }) {
   return (
-    <div className="mt-4">
-      <label className="text-sm font-black">{label}</label>
+    <div className="mt-5">
+      <label className="text-sm font-black text-slate-200">{label}</label>
+
       <input
-        className="mt-2 w-full rounded-2xl border border-slate-300 bg-white p-4 font-bold text-slate-900"
         value={value}
         placeholder={placeholder}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(event) => onChange(event.target.value)}
+        className="mt-2 w-full rounded-2xl border border-white/10 bg-black/20 p-4 font-bold text-white outline-none placeholder:text-slate-600 focus:border-cyan-400/50 focus:ring-4 focus:ring-cyan-500/10"
       />
     </div>
   );
 }
 
-function Textarea({
+function GlassTextarea({
   label,
   value,
   onChange,
@@ -1180,45 +1513,128 @@ function Textarea({
 }: {
   label: string;
   value: string;
-  onChange: (v: string) => void;
+  onChange: (value: string) => void;
   placeholder?: string;
 }) {
   return (
-    <div className="mt-4">
-      <label className="text-sm font-black">{label}</label>
+    <div className="mt-5">
+      <label className="text-sm font-black text-slate-200">{label}</label>
+
       <textarea
-        className="mt-2 h-28 w-full rounded-2xl border border-slate-300 bg-white p-4 font-bold text-slate-900"
         value={value}
         placeholder={placeholder}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(event) => onChange(event.target.value)}
+        className="mt-2 min-h-28 w-full rounded-2xl border border-white/10 bg-black/20 p-4 font-bold leading-6 text-white outline-none placeholder:text-slate-600 focus:border-cyan-400/50 focus:ring-4 focus:ring-cyan-500/10"
       />
     </div>
   );
 }
 
-function Select({
+function GlassSelect({
   label,
   value,
   onChange,
   options,
+  optionLabels,
 }: {
   label: string;
   value: string;
-  onChange: (v: string) => void;
+  onChange: (value: string) => void;
   options: readonly string[];
+  optionLabels?: Record<string, string>;
 }) {
   return (
-    <div className="mt-4">
-      <label className="text-sm font-black">{label}</label>
+    <div className="mt-5">
+      <label className="text-sm font-black text-slate-200">{label}</label>
+
       <select
-        className="mt-2 w-full rounded-2xl border border-slate-300 bg-white p-4 font-bold text-slate-900"
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(event) => onChange(event.target.value)}
+        className="mt-2 w-full rounded-2xl border border-white/10 bg-[#182139] p-4 font-bold text-white outline-none focus:border-cyan-400/50 focus:ring-4 focus:ring-cyan-500/10"
       >
         {options.map((option) => (
-          <option key={option}>{option}</option>
+          <option key={option} value={option}>
+            {optionLabels?.[option] || option}
+          </option>
         ))}
       </select>
+    </div>
+  );
+}
+
+function InlineAdd({
+  value,
+  onChange,
+  onAdd,
+  placeholder,
+  buttonLabel,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  onAdd: () => void;
+  placeholder: string;
+  buttonLabel: string;
+}) {
+  return (
+    <div className="mt-3 flex gap-2">
+      <input
+        value={value}
+        placeholder={placeholder}
+        onChange={(event) => onChange(event.target.value)}
+        className="min-w-0 flex-1 rounded-2xl border border-white/10 bg-black/20 p-4 text-sm font-bold text-white outline-none placeholder:text-slate-600 focus:border-violet-400/50"
+      />
+
+      <button
+        type="button"
+        onClick={onAdd}
+        className="shrink-0 rounded-2xl bg-gradient-to-r from-violet-500 to-pink-500 px-5 text-sm font-black text-white shadow-lg shadow-pink-500/15"
+      >
+        {buttonLabel}
+      </button>
+    </div>
+  );
+}
+
+function MiniInfo({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-3">
+      <p className="text-[10px] font-black text-slate-500">{label}</p>
+      <p className="mt-1 text-xs font-black text-slate-200">{value}</p>
+    </div>
+  );
+}
+
+function DetailText({
+  label,
+  value,
+}: {
+  label: string;
+  value?: string;
+}) {
+  if (!value) return null;
+
+  return (
+    <div className="mt-4 first:mt-0">
+      <p className="text-xs font-black tracking-wider text-cyan-300">
+        {label}
+      </p>
+      <p className="mt-2 whitespace-pre-wrap text-sm font-bold leading-6 text-slate-300">
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function EmptyState({ message }: { message: string }) {
+  return (
+    <div className="mt-4 rounded-[24px] border border-dashed border-white/15 bg-white/[0.03] p-6 text-center">
+      <p className="text-sm font-black text-slate-400">{message}</p>
     </div>
   );
 }
