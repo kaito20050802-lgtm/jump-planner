@@ -9,15 +9,22 @@ import {
   updateDoc,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
-import { DayMenu, Drill, WeeklyDraft, WeeklyItem } from "@/types/training";
+import {
+  DayMenu,
+  Drill,
+  WeeklyDraft,
+  WeeklyItem,
+} from "@/types/training";
 import {
   addDaysISO,
   calculateDaySeconds,
   calculateEndTime,
   createWeekMenus,
+  formatDuration,
   getTodayISO,
   normalizeWeeklyItem,
 } from "@/lib/trainingTime";
+
 import WeeklyDayTabs from "./WeeklyDayTabs";
 import WeeklySearch from "./WeeklySearch";
 import WeeklyFolder from "./WeeklyFolder";
@@ -33,6 +40,8 @@ type Props = {
   onSaved: () => void;
   onCancelEdit: () => void;
 };
+
+type StatusAccent = "cyan" | "violet" | "pink" | "slate";
 
 export default function WeeklyEditor({
   role,
@@ -51,6 +60,7 @@ export default function WeeklyEditor({
   const [dayMenus, setDayMenus] = useState<DayMenu[]>(
     createWeekMenus(getTodayISO())
   );
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (!editingDraft) {
@@ -58,42 +68,78 @@ export default function WeeklyEditor({
       return;
     }
 
+    const draftWeekStart =
+      editingDraft.weekStartDate ||
+      editingDraft.weekStart ||
+      getTodayISO();
+
     setEditingDraftId(editingDraft.id);
-    setWeekStart(
-      editingDraft.weekStartDate || editingDraft.weekStart || getTodayISO()
-    );
+    setWeekStart(draftWeekStart);
     setTheme(editingDraft.theme || "");
     setMemo(editingDraft.memo || "");
 
-    if (editingDraft.dayMenus && editingDraft.dayMenus.length > 0) {
+    if (editingDraft.dayMenus?.length) {
       setDayMenus(
         editingDraft.dayMenus.map((day) => ({
           ...day,
           startTime: day.startTime || "17:00",
-          items: day.items.map((item) => normalizeWeeklyItem(item)),
+          items: (day.items || []).map((item) =>
+            normalizeWeeklyItem(item)
+          ),
         }))
       );
     } else {
-      const menus = createWeekMenus(editingDraft.weekStart || getTodayISO());
+      const menus = createWeekMenus(draftWeekStart);
+
       menus[0].items = (editingDraft.items || []).map((item) =>
         normalizeWeeklyItem(item)
       );
+
       setDayMenus(menus);
     }
 
     setSelectedDayIndex(0);
-    window.scrollTo({ top: 0, behavior: "smooth" });
+
+    window.scrollTo({
+      top: 0,
+      behavior: "smooth",
+    });
   }, [editingDraft]);
 
   const availableDrills = useMemo(() => {
     return drills.filter((drill) => {
       if (role === "leader") return true;
-      return drill.targetEvent === "共通" || drill.targetEvent === event;
+
+      return (
+        drill.targetEvent === "共通" ||
+        drill.targetEvent === event
+      );
     });
   }, [drills, role, event]);
 
   const selectedDay = dayMenus[selectedDayIndex];
-  const selectedIds = selectedDay?.items.map((item) => item.drillId) || [];
+
+  const selectedIds = useMemo(() => {
+    return selectedDay?.items.map((item) => item.drillId) || [];
+  }, [selectedDay]);
+
+  const totalWeekItems = useMemo(() => {
+    return dayMenus.reduce(
+      (total, day) => total + day.items.length,
+      0
+    );
+  }, [dayMenus]);
+
+  const completedDays = useMemo(() => {
+    return dayMenus.filter((day) => day.items.length > 0).length;
+  }, [dayMenus]);
+
+  const weekTotalSeconds = useMemo(() => {
+    return dayMenus.reduce(
+      (total, day) => total + calculateDaySeconds(day),
+      0
+    );
+  }, [dayMenus]);
 
   const handleWeekStartChange = (value: string) => {
     setWeekStart(value);
@@ -102,16 +148,20 @@ export default function WeeklyEditor({
   };
 
   const toggleDrill = (drill: Drill) => {
-    setDayMenus((prev) =>
-      prev.map((day, index) => {
+    setDayMenus((currentMenus) =>
+      currentMenus.map((day, index) => {
         if (index !== selectedDayIndex) return day;
 
-        const exists = day.items.some((item) => item.drillId === drill.id);
+        const exists = day.items.some(
+          (item) => item.drillId === drill.id
+        );
 
         if (exists) {
           return {
             ...day,
-            items: day.items.filter((item) => item.drillId !== drill.id),
+            items: day.items.filter(
+              (item) => item.drillId !== drill.id
+            ),
           };
         }
 
@@ -123,7 +173,6 @@ export default function WeeklyEditor({
           purposeTags: drill.purposeTags || [],
 
           timeMode: drill.timeMode || "manual",
-
           baseDistance: drill.baseDistance || "",
           baseSeconds: drill.baseSeconds || "",
           defaultMinutes: drill.defaultMinutes || "",
@@ -133,24 +182,16 @@ export default function WeeklyEditor({
           sets: "",
           intensity: "",
 
-          // 本数間レスト
           repRestSeconds: "",
-
-          // セット間レスト
           setRestMinutes: "",
 
-          // 手入力時間
           manualMinutes: drill.defaultMinutes || "",
-
-          // ★追加
           customOneRepSeconds: "",
 
-          // 筋トレ用
           selectedSeason: undefined,
           selectedPurpose: undefined,
           selectedPercent: "",
         };
-        
 
         return {
           ...day,
@@ -161,9 +202,14 @@ export default function WeeklyEditor({
   };
 
   const updateDayStartTime = (value: string) => {
-    setDayMenus((prev) =>
-      prev.map((day, index) =>
-        index === selectedDayIndex ? { ...day, startTime: value } : day
+    setDayMenus((currentMenus) =>
+      currentMenus.map((day, index) =>
+        index === selectedDayIndex
+          ? {
+              ...day,
+              startTime: value,
+            }
+          : day
       )
     );
   };
@@ -173,14 +219,19 @@ export default function WeeklyEditor({
     field: keyof WeeklyItem,
     value: string
   ) => {
-    setDayMenus((prev) =>
-      prev.map((day, index) => {
+    setDayMenus((currentMenus) =>
+      currentMenus.map((day, index) => {
         if (index !== selectedDayIndex) return day;
 
         return {
           ...day,
           items: day.items.map((item) =>
-            item.drillId === drillId ? { ...item, [field]: value } : item
+            item.drillId === drillId
+              ? {
+                  ...item,
+                  [field]: value,
+                }
+              : item
           ),
         };
       })
@@ -188,21 +239,25 @@ export default function WeeklyEditor({
   };
 
   const removeItem = (drillId: string) => {
-    setDayMenus((prev) =>
-      prev.map((day, index) => {
+    setDayMenus((currentMenus) =>
+      currentMenus.map((day, index) => {
         if (index !== selectedDayIndex) return day;
 
         return {
           ...day,
-          items: day.items.filter((item) => item.drillId !== drillId),
+          items: day.items.filter(
+            (item) => item.drillId !== drillId
+          ),
         };
       })
     );
   };
 
-  const saveDraft = async (status: "draft" | "submitted") => {
+  const saveDraft = async (
+    status: "draft" | "submitted"
+  ) => {
     if (!theme.trim()) {
-      alert("今週テーマを入力してください");
+      alert("今週のテーマを入力してください");
       return;
     }
 
@@ -217,7 +272,7 @@ export default function WeeklyEditor({
     const maxDate = addDaysISO(today, 28);
 
     if (weekStart > maxDate) {
-      alert("4週間先までしか作成できません");
+      alert("週メニューは4週間先まで作成できます");
       return;
     }
 
@@ -228,38 +283,57 @@ export default function WeeklyEditor({
       weekStart,
       weekStartDate: weekStart,
       deleteAfter,
-      theme,
-      memo,
+      theme: theme.trim(),
+      memo: memo.trim(),
       dayMenus,
       items: allItems,
       status,
       updatedAt: serverTimestamp(),
     };
 
-    if (editingDraftId) {
-      await updateDoc(doc(db, "weeklyMenuDrafts", editingDraftId), payload);
-    } else {
-      await addDoc(collection(db, "weeklyMenuDrafts"), {
-        ...payload,
-        submittedBy: memberId,
-        leaderComment: "",
-        coachComment: "",
-        createdAt: serverTimestamp(),
-      });
-    }
+    setSaving(true);
 
-    alert(status === "draft" ? "下書きを保存しました" : "提出しました");
-    resetForm();
-    onSaved();
+    try {
+      if (editingDraftId) {
+        await updateDoc(
+          doc(db, "weeklyMenuDrafts", editingDraftId),
+          payload
+        );
+      } else {
+        await addDoc(collection(db, "weeklyMenuDrafts"), {
+          ...payload,
+          submittedBy: memberId,
+          leaderComment: "",
+          coachComment: "",
+          createdAt: serverTimestamp(),
+        });
+      }
+
+      alert(
+        status === "draft"
+          ? "下書きを保存しました"
+          : "パート長へ提出しました"
+      );
+
+      resetForm();
+      onSaved();
+    } catch (error) {
+      console.error("週メニューの保存に失敗しました", error);
+      alert("週メニューの保存に失敗しました");
+    } finally {
+      setSaving(false);
+    }
   };
 
   const resetForm = () => {
+    const today = getTodayISO();
+
     setEditingDraftId(null);
-    setWeekStart(getTodayISO());
+    setWeekStart(today);
     setTheme("");
     setMemo("");
     setSelectedDayIndex(0);
-    setDayMenus(createWeekMenus(getTodayISO()));
+    setDayMenus(createWeekMenus(today));
   };
 
   const cancelEdit = () => {
@@ -269,73 +343,149 @@ export default function WeeklyEditor({
 
   if (!selectedDay) return null;
 
-  const totalSeconds = calculateDaySeconds(selectedDay);
-  const endTime = calculateEndTime(selectedDay.startTime, totalSeconds);
+  const selectedDaySeconds = calculateDaySeconds(selectedDay);
+
+  const selectedDayEndTime = calculateEndTime(
+    selectedDay.startTime,
+    selectedDaySeconds
+  );
 
   return (
     <>
-      <section className="mt-5 rounded-[28px] bg-white p-5 shadow-sm">
-        <h2 className="text-xl font-black">
-          {editingDraftId ? "メニュー編集" : "仮メニュー作成"}
-        </h2>
+      {/* 基本情報 */}
+      <section className="relative overflow-hidden rounded-[32px] border border-white/10 bg-white/[0.07] p-5 shadow-2xl backdrop-blur-2xl md:p-6">
+        <div className="pointer-events-none absolute -right-16 -top-20 h-52 w-52 rounded-full bg-cyan-500/15 blur-3xl" />
 
-        <Input
-          label="週の開始日"
-          type="date"
-          value={weekStart}
-          onChange={handleWeekStartChange}
-        />
+        <div className="relative">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-xs font-black tracking-[0.2em] text-cyan-300">
+                PLAN SETTINGS
+              </p>
 
-        <Input
-          label="今週テーマ"
-          value={theme}
-          onChange={setTheme}
-          placeholder="例：ホップ改善、助走リズム"
-        />
+              <h2 className="mt-2 text-2xl font-black text-white">
+                {editingDraftId
+                  ? "週メニューを編集"
+                  : "基本情報を設定"}
+              </h2>
 
-        <div className="mt-4">
-          <label className="text-sm font-black">代表メモ</label>
-          <textarea
-            className="mt-2 h-24 w-full rounded-2xl border border-slate-300 bg-white p-4 font-bold"
+              <p className="mt-2 text-sm font-bold leading-6 text-slate-400">
+                週のテーマと対象期間を設定してから、
+                曜日ごとの練習を作成します。
+              </p>
+            </div>
+
+            {editingDraftId && (
+              <span className="shrink-0 rounded-full border border-amber-400/20 bg-amber-400/10 px-3 py-2 text-xs font-black text-amber-300">
+                編集中
+              </span>
+            )}
+          </div>
+
+          <div className="mt-5 grid gap-4 md:grid-cols-2">
+            <GlassInput
+              label="週の開始日"
+              type="date"
+              value={weekStart}
+              onChange={handleWeekStartChange}
+            />
+
+            <GlassInput
+              label="今週のテーマ"
+              value={theme}
+              onChange={setTheme}
+              placeholder="例：ホップ改善、助走リズムの安定"
+            />
+          </div>
+
+          <GlassTextarea
+            label="代表メモ"
             value={memo}
-            onChange={(e) => setMemo(e.target.value)}
-            placeholder="狙いや流れを書いてください"
+            onChange={setMemo}
+            placeholder="今週の狙い、練習の流れ、注意したいことなど"
           />
-        </div>
 
-        <div className="mt-4 rounded-2xl bg-slate-100 p-4">
-          <p className="text-sm font-black text-slate-500">選択中の日</p>
-          <p className="mt-1 text-lg font-black">
-            {selectedDay.date}（{selectedDay.label}）
-          </p>
-          <p className="mt-1 text-sm font-bold text-slate-500">
-            {selectedDay.startTime}開始 → {endTime}終了予定
-          </p>
+          <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-4">
+            <StatusCard
+              label="選択中"
+              value={`${selectedDay.label}曜日`}
+              accent="cyan"
+            />
+
+            <StatusCard
+              label="開始時刻"
+              value={selectedDay.startTime || "未設定"}
+              accent="violet"
+            />
+
+            <StatusCard
+              label="終了予定"
+              value={selectedDayEndTime}
+              accent="pink"
+            />
+
+            <StatusCard
+              label="登録済み"
+              value={`${selectedDay.items.length}件`}
+              accent="slate"
+            />
+          </div>
         </div>
       </section>
 
-      <WeeklyDayTabs
-        dayMenus={dayMenus}
-        selectedDayIndex={selectedDayIndex}
-        onChange={setSelectedDayIndex}
-      />
-
-      <div className="mt-5">
-        <WeeklySearch
-          drills={availableDrills}
-          selectedIds={selectedIds}
-          onSelect={toggleDrill}
+      {/* 曜日選択 */}
+      <section className="mt-5 rounded-[32px] border border-white/10 bg-white/[0.07] p-5 shadow-2xl backdrop-blur-2xl md:p-6">
+        <SectionTitle
+          icon="7"
+          eyebrow="DAY SELECT"
+          title="編集する曜日を選択"
+          accent="violet"
         />
-      </div>
 
-      <div className="mt-5">
-        <WeeklyFolder
-          drills={availableDrills}
-          selectedIds={selectedIds}
-          onSelect={toggleDrill}
+        <WeeklyDayTabs
+          dayMenus={dayMenus}
+          selectedDayIndex={selectedDayIndex}
+          onChange={setSelectedDayIndex}
         />
-      </div>
+      </section>
 
+      {/* 検索 */}
+      <section className="mt-5 rounded-[32px] border border-white/10 bg-white/[0.07] p-5 shadow-2xl backdrop-blur-2xl md:p-6">
+        <SectionTitle
+          icon="⌕"
+          eyebrow="SEARCH"
+          title="練習名から探す"
+          accent="cyan"
+        />
+
+        <div className="mt-5">
+          <WeeklySearch
+            drills={availableDrills}
+            selectedIds={selectedIds}
+            onSelect={toggleDrill}
+          />
+        </div>
+      </section>
+
+      {/* フォルダー */}
+      <section className="mt-5 rounded-[32px] border border-white/10 bg-white/[0.07] p-5 shadow-2xl backdrop-blur-2xl md:p-6">
+        <SectionTitle
+          icon="▣"
+          eyebrow="FOLDER"
+          title="フォルダーから選択"
+          accent="pink"
+        />
+
+        <div className="mt-5">
+          <WeeklyFolder
+            drills={availableDrills}
+            selectedIds={selectedIds}
+            onSelect={toggleDrill}
+          />
+        </div>
+      </section>
+
+      {/* 選択した練習 */}
       <WeeklySelectedList
         selectedDay={selectedDay}
         selectedDayIndex={selectedDayIndex}
@@ -344,67 +494,158 @@ export default function WeeklyEditor({
         onRemoveItem={removeItem}
       />
 
+      {/* その日のまとめ */}
       <WeeklySummary selectedDay={selectedDay} />
 
-      <section className="mt-5 rounded-[28px] bg-white p-5 shadow-sm">
-        <h2 className="text-xl font-black">各曜日のメニュー確認</h2>
+      {/* 週間一覧 */}
+      <section className="mt-5 rounded-[32px] border border-white/10 bg-white/[0.07] p-5 shadow-2xl backdrop-blur-2xl md:p-6">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-xs font-black tracking-[0.2em] text-pink-300">
+              WEEK OVERVIEW
+            </p>
 
-        <div className="mt-4 space-y-3">
-          {dayMenus.map((day) => {
+            <h2 className="mt-2 text-xl font-black text-white">
+              1週間のメニュー確認
+            </h2>
+          </div>
+
+          <div className="text-right">
+            <p className="text-xs font-black text-slate-500">
+              週間合計
+            </p>
+
+            <p className="mt-1 text-sm font-black text-cyan-300">
+              {formatDuration(weekTotalSeconds)}
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-5 grid gap-3 md:grid-cols-2">
+          {dayMenus.map((day, dayIndex) => {
             const seconds = calculateDaySeconds(day);
-            const dayEndTime = calculateEndTime(day.startTime, seconds);
+
+            const endTime = calculateEndTime(
+              day.startTime,
+              seconds
+            );
+
+            const selected = dayIndex === selectedDayIndex;
 
             return (
-              <div key={day.date} className="rounded-2xl bg-slate-100 p-4">
-                <p className="font-black">
-                  {day.date}（{day.label}）
-                </p>
-                <p className="mt-1 text-xs font-bold text-slate-500">
-                  {day.startTime}開始 → {dayEndTime}終了予定
+              <button
+                key={day.date}
+                type="button"
+                onClick={() => setSelectedDayIndex(dayIndex)}
+                className={`w-full rounded-[24px] border p-4 text-left transition ${
+                  selected
+                    ? "border-cyan-300/40 bg-cyan-400/10 shadow-lg shadow-cyan-500/10"
+                    : "border-white/10 bg-black/20 hover:border-white/20 hover:bg-white/[0.06]"
+                }`}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p
+                      className={`text-xs font-black ${
+                        selected
+                          ? "text-cyan-300"
+                          : "text-slate-500"
+                      }`}
+                    >
+                      {day.label}曜日
+                    </p>
+
+                    <p className="mt-1 font-black text-white">
+                      {day.date}
+                    </p>
+                  </div>
+
+                  <span className="rounded-full border border-white/10 bg-white/[0.05] px-3 py-1 text-[10px] font-black text-slate-300">
+                    {day.items.length}件
+                  </span>
+                </div>
+
+                <p className="mt-3 text-xs font-bold text-slate-400">
+                  {day.startTime || "--:--"} 開始
+                  <span className="mx-2 text-slate-600">→</span>
+                  {endTime} 終了予定
                 </p>
 
-                {day.items.length > 0 ? (
-                  <div className="mt-2 space-y-2">
-                    {day.items.map((item, index) => (
-                      <p
-                        key={`${day.date}-${item.drillId}-${index}`}
-                        className="text-sm font-bold"
-                      >
-                        {index + 1}. {item.name}
-                      </p>
-                    ))}
-                  </div>
-                ) : (
-                  <p className="mt-2 text-sm font-bold text-slate-500">
-                    未入力
-                  </p>
-                )}
-              </div>
+                <div className="mt-3 space-y-2">
+                  {day.items.slice(0, 3).map((item, index) => (
+                    <p
+                      key={`${day.date}-${item.drillId}-${index}`}
+                      className="truncate text-sm font-bold text-slate-300"
+                    >
+                      {index + 1}. {item.name}
+                    </p>
+                  ))}
+
+                  {day.items.length > 3 && (
+                    <p className="text-xs font-black text-violet-300">
+                      ほか {day.items.length - 3}件
+                    </p>
+                  )}
+
+                  {day.items.length === 0 && (
+                    <p className="text-sm font-bold text-slate-600">
+                      まだ練習が登録されていません
+                    </p>
+                  )}
+                </div>
+              </button>
             );
           })}
         </div>
       </section>
 
-      <div className="mt-5 grid grid-cols-2 gap-3">
+      {/* 週間進捗 */}
+      <section className="mt-5 rounded-[32px] border border-white/10 bg-gradient-to-r from-violet-500/10 via-cyan-500/10 to-pink-500/10 p-5 backdrop-blur-2xl md:p-6">
+        <div className="grid grid-cols-3 gap-3">
+          <ProgressCard
+            label="入力済み曜日"
+            value={`${completedDays}/7`}
+          />
+
+          <ProgressCard
+            label="練習数"
+            value={`${totalWeekItems}件`}
+          />
+
+          <ProgressCard
+            label="週間時間"
+            value={formatDuration(weekTotalSeconds)}
+          />
+        </div>
+      </section>
+
+      {/* 保存ボタン */}
+      <div className="mt-5 grid gap-3 md:grid-cols-2">
         <button
+          type="button"
+          disabled={saving}
           onClick={() => saveDraft("draft")}
-          className="rounded-2xl bg-white py-4 font-black text-slate-900 shadow-sm"
+          className="rounded-2xl border border-white/10 bg-white/[0.07] py-4 font-black text-white shadow-xl backdrop-blur-xl transition hover:-translate-y-0.5 hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          下書き保存
+          {saving ? "保存中..." : "下書きを保存"}
         </button>
 
         <button
+          type="button"
+          disabled={saving}
           onClick={() => saveDraft("submitted")}
-          className="rounded-2xl bg-blue-600 py-4 font-black text-white"
+          className="rounded-2xl bg-gradient-to-r from-cyan-500 via-blue-600 to-violet-600 py-4 font-black text-white shadow-xl shadow-blue-500/20 transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-50"
         >
-          提出する
+          {saving ? "送信中..." : "パート長へ提出"}
         </button>
       </div>
 
       {editingDraftId && (
         <button
+          type="button"
+          disabled={saving}
           onClick={cancelEdit}
-          className="mt-3 w-full rounded-2xl bg-slate-200 py-4 font-black text-slate-700"
+          className="mt-3 w-full rounded-2xl border border-rose-400/20 bg-rose-400/10 py-4 font-black text-rose-300 transition hover:bg-rose-400/15 disabled:opacity-50"
         >
           編集をキャンセル
         </button>
@@ -413,7 +654,7 @@ export default function WeeklyEditor({
   );
 }
 
-function Input({
+function GlassInput({
   label,
   value,
   onChange,
@@ -422,20 +663,149 @@ function Input({
 }: {
   label: string;
   value: string;
-  onChange: (v: string) => void;
+  onChange: (value: string) => void;
   placeholder?: string;
   type?: string;
 }) {
   return (
-    <div className="mt-4">
-      <label className="text-sm font-black">{label}</label>
+    <div>
+      <label className="text-sm font-black text-slate-200">
+        {label}
+      </label>
+
       <input
         type={type}
-        className="mt-2 w-full rounded-2xl border border-slate-300 bg-white p-4 font-bold"
         value={value}
         placeholder={placeholder}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(event) => onChange(event.target.value)}
+        className="mt-2 w-full rounded-2xl border border-white/10 bg-black/20 p-4 font-bold text-white outline-none placeholder:text-slate-600 focus:border-cyan-400/50 focus:ring-4 focus:ring-cyan-500/10"
       />
+    </div>
+  );
+}
+
+function GlassTextarea({
+  label,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+}) {
+  return (
+    <div className="mt-5">
+      <label className="text-sm font-black text-slate-200">
+        {label}
+      </label>
+
+      <textarea
+        value={value}
+        placeholder={placeholder}
+        onChange={(event) => onChange(event.target.value)}
+        className="mt-2 min-h-28 w-full rounded-2xl border border-white/10 bg-black/20 p-4 font-bold leading-6 text-white outline-none placeholder:text-slate-600 focus:border-cyan-400/50 focus:ring-4 focus:ring-cyan-500/10"
+      />
+    </div>
+  );
+}
+
+function StatusCard({
+  label,
+  value,
+  accent,
+}: {
+  label: string;
+  value: string;
+  accent: StatusAccent;
+}) {
+  const styles: Record<StatusAccent, string> = {
+    cyan: "border-cyan-400/20 bg-cyan-400/10 text-cyan-300",
+    violet:
+      "border-violet-400/20 bg-violet-400/10 text-violet-300",
+    pink: "border-pink-400/20 bg-pink-400/10 text-pink-300",
+    slate: "border-white/10 bg-white/[0.05] text-slate-200",
+  };
+
+  return (
+    <div className={`rounded-2xl border p-3 ${styles[accent]}`}>
+      <p className="text-[10px] font-black text-slate-500">
+        {label}
+      </p>
+
+      <p className="mt-1 truncate text-sm font-black">
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function ProgressCard({
+  label,
+  value,
+}: {
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-white/10 bg-black/20 p-3 text-center">
+      <p className="text-[10px] font-black text-slate-500">
+        {label}
+      </p>
+
+      <p className="mt-1 text-sm font-black text-white">
+        {value}
+      </p>
+    </div>
+  );
+}
+
+function SectionTitle({
+  icon,
+  eyebrow,
+  title,
+  accent,
+}: {
+  icon: string;
+  eyebrow: string;
+  title: string;
+  accent: "cyan" | "violet" | "pink";
+}) {
+  const iconStyles = {
+    cyan:
+      "from-cyan-400 to-blue-600 shadow-cyan-500/20",
+    violet:
+      "from-violet-500 to-indigo-600 shadow-violet-500/20",
+    pink:
+      "from-pink-500 to-rose-500 shadow-pink-500/20",
+  };
+
+  const textStyles = {
+    cyan: "text-cyan-300",
+    violet: "text-violet-300",
+    pink: "text-pink-300",
+  };
+
+  return (
+    <div className="flex items-center gap-3">
+      <div
+        className={`flex h-11 w-11 items-center justify-center rounded-2xl bg-gradient-to-br text-lg font-black text-white shadow-lg ${iconStyles[accent]}`}
+      >
+        {icon}
+      </div>
+
+      <div>
+        <p
+          className={`text-xs font-black tracking-[0.2em] ${textStyles[accent]}`}
+        >
+          {eyebrow}
+        </p>
+
+        <h2 className="mt-1 text-xl font-black text-white">
+          {title}
+        </h2>
+      </div>
     </div>
   );
 }
