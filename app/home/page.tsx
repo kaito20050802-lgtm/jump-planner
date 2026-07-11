@@ -265,7 +265,7 @@ export default function HomePage() {
 
                 <DashboardCard
                   title="完成メニュー出力"
-                  description="承認済みメニューをスクショ形式で表示します"
+                  description="完成版を期間指定してLINE共有用に表示します"
                   icon="↗"
                   accent="cyan"
                   onClick={() => router.push("/output")}
