@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  addDoc,
   collection,
   deleteDoc,
   doc,
@@ -13,20 +12,23 @@ import {
   query,
   serverTimestamp,
   updateDoc,
+  writeBatch,
 } from "firebase/firestore";
+
 import { db } from "@/lib/firebase";
+
 import {
   DayMenu,
   Drill,
   WeeklyDraft,
   WeeklyItem,
 } from "@/types/training";
+
 import {
   calculateDaySeconds,
   calculateEndTime,
   createDeleteAfter,
   createWeekMenus,
-  formatDuration,
   getTodayISO,
   isDeleteExpired,
   normalizeText,
@@ -59,16 +61,18 @@ export default function ReviewPage() {
   const [searchText, setSearchText] = useState("");
 
   const [loading, setLoading] = useState(true);
+  const [opening, setOpening] = useState(false);
   const [saving, setSaving] = useState(false);
   const [publishing, setPublishing] = useState(false);
 
   useEffect(() => {
     const role = sessionStorage.getItem("currentRole");
+
     const currentMemberId =
       sessionStorage.getItem("currentMemberId") || "";
 
     if (role !== "leader" || !currentMemberId) {
-      router.push("/");
+      router.replace("/");
       return;
     }
 
@@ -77,60 +81,81 @@ export default function ReviewPage() {
     const load = async () => {
       try {
         await cleanupExpiredData();
+
         await Promise.all([
           loadMember(currentMemberId),
           loadDrafts(),
           loadDrills(),
         ]);
       } catch (error) {
-        console.error("提出BOXの読み込みに失敗しました", error);
+        console.error(
+          "提出BOXの読み込みに失敗しました",
+          error
+        );
+
         alert("提出メニューの読み込みに失敗しました");
       } finally {
         setLoading(false);
       }
     };
 
-    load();
+    void load();
   }, [router]);
 
   const loadMember = async (id: string) => {
     const snap = await getDoc(doc(db, "members", id));
 
-    if (!snap.exists()) return;
+    if (!snap.exists()) {
+      setMemberName("パート長");
+      return;
+    }
 
     const member = {
       id: snap.id,
       ...snap.data(),
     } as Member;
 
-    setMemberName(member.name || "");
+    setMemberName(member.name || "パート長");
   };
 
   const loadDrafts = async () => {
-    const draftsQuery = query(
-      collection(db, "weeklyMenuDrafts"),
-      orderBy("updatedAt", "desc")
-    );
+    let snap;
 
-    const snap = await getDocs(draftsQuery);
+    try {
+      const draftsQuery = query(
+        collection(db, "weeklyMenuDrafts"),
+        orderBy("updatedAt", "desc")
+      );
+
+      snap = await getDocs(draftsQuery);
+    } catch (error) {
+      console.warn(
+        "updatedAt順で取得できないため通常取得します",
+        error
+      );
+
+      snap = await getDocs(
+        collection(db, "weeklyMenuDrafts")
+      );
+    }
 
     const loaded = snap.docs.map((item) => ({
       id: item.id,
       ...item.data(),
     })) as WeeklyDraft[];
 
-    setDrafts(
-      loaded.filter((draft) =>
-        [
-          "submitted",
-          "editing",
-          "published",
-          "approved",
-          "revision",
-          "returned",
-        ].includes(draft.status)
-      )
+    const filtered = loaded.filter((draft) =>
+      [
+        "submitted",
+        "editing",
+        "published",
+        "approved",
+        "revision",
+        "returned",
+      ].includes(draft.status)
     );
+
+    setDrafts(filtered);
   };
 
   const loadDrills = async () => {
@@ -152,6 +177,8 @@ export default function ReviewPage() {
       getDocs(collection(db, "weeklyPlans")),
     ]);
 
+    const today = getTodayISO();
+
     const expiredDrafts = draftSnap.docs.filter((item) => {
       const data = item.data() as WeeklyDraft;
 
@@ -164,25 +191,26 @@ export default function ReviewPage() {
 
       if (!weekStart) return false;
 
-      return createDeleteAfter(weekStart) < getTodayISO();
+      return createDeleteAfter(weekStart) < today;
     });
 
     const expiredPlans = planSnap.docs.filter((item) => {
       const data = item.data() as {
         deleteAfter?: string;
         weekStart?: string;
+        weekStartDate?: string;
       };
 
       if (data.deleteAfter) {
         return isDeleteExpired(data.deleteAfter);
       }
 
-      if (!data.weekStart) return false;
+      const weekStart =
+        data.weekStartDate || data.weekStart;
 
-      return (
-        createDeleteAfter(data.weekStart) <
-        getTodayISO()
-      );
+      if (!weekStart) return false;
+
+      return createDeleteAfter(weekStart) < today;
     });
 
     await Promise.all([
@@ -191,6 +219,7 @@ export default function ReviewPage() {
           doc(db, "weeklyMenuDrafts", item.id)
         )
       ),
+
       ...expiredPlans.map((item) =>
         deleteDoc(doc(db, "weeklyPlans", item.id))
       ),
@@ -233,7 +262,9 @@ export default function ReviewPage() {
   const filteredDrills = useMemo(() => {
     const keyword = normalizeText(searchText);
 
-    if (!keyword || !selectedDraft) return [];
+    if (!keyword || !selectedDraft) {
+      return [];
+    }
 
     return drills
       .filter(
@@ -261,29 +292,45 @@ export default function ReviewPage() {
   }, [drills, searchText, selectedDraft]);
 
   const openDraft = async (draft: WeeklyDraft) => {
-    const originalMenus = getDraftDayMenus(draft);
+    if (opening || saving || publishing) return;
 
-    const editorMenus =
-      draft.leaderDayMenus?.length
-        ? cloneDayMenus(draft.leaderDayMenus)
-        : cloneDayMenus(originalMenus);
+    setOpening(true);
 
-    setSelectedDraft(draft);
-    setLeaderDayMenus(editorMenus);
-    setLeaderMemo(
-      draft.leaderMemo ||
-        draft.leaderComment ||
-        ""
-    );
-    setSelectedDayIndex(0);
-    setSearchText("");
+    try {
+      const originalMenus = getDraftDayMenus(draft);
 
-    if (
-      draft.status === "submitted" ||
-      draft.status === "revision" ||
-      draft.status === "returned"
-    ) {
-      try {
+      const sourceMenus =
+        draft.leaderDayMenus?.length
+          ? cloneDayMenus(draft.leaderDayMenus)
+          : cloneDayMenus(originalMenus);
+
+      const editorMenus = removeUndefinedValues(
+        sourceMenus
+      ) as DayMenu[];
+
+      const nextDraft: WeeklyDraft = {
+        ...draft,
+        leaderDayMenus: editorMenus,
+      };
+
+      setSelectedDraft(nextDraft);
+      setLeaderDayMenus(editorMenus);
+
+      setLeaderMemo(
+        draft.leaderMemo ||
+          draft.leaderComment ||
+          ""
+      );
+
+      setSelectedDayIndex(0);
+      setSearchText("");
+
+      const requiresEditingStatus =
+        draft.status === "submitted" ||
+        draft.status === "revision" ||
+        draft.status === "returned";
+
+      if (requiresEditingStatus) {
         await updateDoc(
           doc(db, "weeklyMenuDrafts", draft.id),
           {
@@ -295,38 +342,47 @@ export default function ReviewPage() {
           }
         );
 
+        const updatedDraft: WeeklyDraft = {
+          ...nextDraft,
+          status: "editing",
+          editingBy: memberId,
+        };
+
         setDrafts((current) =>
           current.map((item) =>
             item.id === draft.id
-              ? {
-                  ...item,
-                  status: "editing",
-                  leaderDayMenus: editorMenus,
-                  editingBy: memberId,
-                }
+              ? updatedDraft
               : item
           )
         );
 
-        setSelectedDraft({
-          ...draft,
-          status: "editing",
-          leaderDayMenus: editorMenus,
-          editingBy: memberId,
-        });
-      } catch (error) {
-        console.error("編集開始処理に失敗しました", error);
-        alert("編集状態への変更に失敗しました");
+        setSelectedDraft(updatedDraft);
       }
-    }
 
-    window.scrollTo({
-      top: 0,
-      behavior: "smooth",
-    });
+      window.scrollTo({
+        top: 0,
+        behavior: "smooth",
+      });
+    } catch (error) {
+      console.error(
+        "編集開始処理に失敗しました",
+        error
+      );
+
+      alert(
+        createErrorMessage(
+          "編集状態への変更に失敗しました",
+          error
+        )
+      );
+    } finally {
+      setOpening(false);
+    }
   };
 
   const closeEditor = () => {
+    if (saving || publishing) return;
+
     setSelectedDraft(null);
     setLeaderDayMenus([]);
     setLeaderMemo("");
@@ -360,6 +416,7 @@ export default function ReviewPage() {
 
         return {
           ...day,
+
           items: day.items.map((item, index) =>
             index === itemIndex
               ? {
@@ -382,6 +439,7 @@ export default function ReviewPage() {
 
         return {
           ...day,
+
           items: day.items.filter(
             (_, index) => index !== itemIndex
           ),
@@ -412,11 +470,10 @@ export default function ReviewPage() {
 
       repRestSeconds: "",
       setRestMinutes: "",
+
       manualMinutes: drill.defaultMinutes || "",
       customOneRepSeconds: "",
 
-      selectedSeason: undefined,
-      selectedPurpose: undefined,
       selectedPercent: "",
     };
 
@@ -433,11 +490,22 @@ export default function ReviewPage() {
   };
 
   const saveLeaderEdit = async () => {
-    if (!selectedDraft) return;
+    if (
+      !selectedDraft ||
+      saving ||
+      publishing
+    ) {
+      return;
+    }
 
     setSaving(true);
 
     try {
+      const cleanedLeaderDayMenus =
+        removeUndefinedValues(
+          leaderDayMenus
+        ) as DayMenu[];
+
       await updateDoc(
         doc(
           db,
@@ -446,42 +514,100 @@ export default function ReviewPage() {
         ),
         {
           status: "editing",
-          leaderDayMenus,
-          leaderMemo: leaderMemo.trim(),
+          leaderDayMenus:
+            cleanedLeaderDayMenus,
+
+          leaderMemo:
+            leaderMemo.trim(),
+
           editingBy: memberId,
           updatedAt: serverTimestamp(),
         }
       );
 
-      alert("パート長の編集内容を保存しました");
-
-      await loadDrafts();
+      setLeaderDayMenus(
+        cleanedLeaderDayMenus
+      );
 
       setSelectedDraft((current) =>
         current
           ? {
               ...current,
               status: "editing",
-              leaderDayMenus,
-              leaderMemo: leaderMemo.trim(),
+              leaderDayMenus:
+                cleanedLeaderDayMenus,
+              leaderMemo:
+                leaderMemo.trim(),
             }
           : current
       );
+
+      setDrafts((current) =>
+        current.map((draft) =>
+          draft.id === selectedDraft.id
+            ? {
+                ...draft,
+                status: "editing",
+                leaderDayMenus:
+                  cleanedLeaderDayMenus,
+                leaderMemo:
+                  leaderMemo.trim(),
+              }
+            : draft
+        )
+      );
+
+      alert(
+        "パート長の編集内容を保存しました"
+      );
+
+      await loadDrafts();
     } catch (error) {
-      console.error("編集内容の保存に失敗しました", error);
-      alert("編集内容の保存に失敗しました");
+      console.error(
+        "編集内容の保存に失敗しました",
+        error
+      );
+
+      alert(
+        createErrorMessage(
+          "編集内容の保存に失敗しました",
+          error
+        )
+      );
     } finally {
       setSaving(false);
     }
   };
 
   const publishPlan = async () => {
-    if (!selectedDraft) return;
+    if (
+      !selectedDraft ||
+      saving ||
+      publishing
+    ) {
+      return;
+    }
 
-    const totalItems = leaderDayMenus.reduce(
-      (sum, day) => sum + day.items.length,
-      0
-    );
+    const weekStart =
+      selectedDraft.weekStartDate ||
+      selectedDraft.weekStart;
+
+    if (!weekStart) {
+      alert("週の開始日を取得できません");
+      return;
+    }
+
+    const cleanedLeaderDayMenus =
+      removeUndefinedValues(
+        leaderDayMenus
+      ) as DayMenu[];
+
+    const totalItems =
+      cleanedLeaderDayMenus.reduce(
+        (sum, day) =>
+          sum + day.items.length,
+        0
+      );
 
     if (totalItems === 0) {
       alert("完成メニューに練習がありません");
@@ -498,75 +624,111 @@ export default function ReviewPage() {
 
     try {
       const originalDayMenus =
-        getDraftDayMenus(selectedDraft);
+        removeUndefinedValues(
+          cloneDayMenus(
+            getDraftDayMenus(selectedDraft)
+          )
+        ) as DayMenu[];
 
-      const weekStart =
-        selectedDraft.weekStartDate ||
-        selectedDraft.weekStart;
+      /*
+       * weeklyPlans追加と下書き更新を
+       * バッチでまとめて実行します。
+       * 片方だけ成功する状態を防ぎます。
+       */
+      const batch = writeBatch(db);
 
-      const planReference = await addDoc(
-        collection(db, "weeklyPlans"),
-        {
-          sourceDraftId: selectedDraft.id,
-          event: selectedDraft.event,
-
-          submittedBy:
-            selectedDraft.submittedBy || "",
-          submittedByName:
-            selectedDraft.submittedByName || "",
-
-          weekStart,
-          weekStartDate: weekStart,
-          deleteAfter:
-            selectedDraft.deleteAfter ||
-            createDeleteAfter(weekStart),
-
-          theme: selectedDraft.theme || "",
-          representativeMemo:
-            selectedDraft.memo || "",
-          leaderMemo: leaderMemo.trim(),
-
-          originalDayMenus:
-            cloneDayMenus(originalDayMenus),
-
-          dayMenus:
-            cloneDayMenus(leaderDayMenus),
-
-          publishedBy: memberId,
-          publishedByName: memberName,
-
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-          publishedAt: serverTimestamp(),
-        }
+      const planReference = doc(
+        collection(db, "weeklyPlans")
       );
 
-      await updateDoc(
-        doc(
-          db,
-          "weeklyMenuDrafts",
-          selectedDraft.id
-        ),
-        {
-          status: "published",
-          leaderDayMenus,
-          leaderMemo: leaderMemo.trim(),
-
-          publishedPlanId: planReference.id,
-          publishedBy: memberId,
-          publishedAt: serverTimestamp(),
-
-          updatedAt: serverTimestamp(),
-        }
+      const draftReference = doc(
+        db,
+        "weeklyMenuDrafts",
+        selectedDraft.id
       );
+
+      batch.set(planReference, {
+        sourceDraftId: selectedDraft.id,
+
+        event:
+          selectedDraft.event || "共通",
+
+        submittedBy:
+          selectedDraft.submittedBy || "",
+
+        submittedByName:
+          selectedDraft.submittedByName || "",
+
+        weekStart,
+        weekStartDate: weekStart,
+
+        deleteAfter:
+          selectedDraft.deleteAfter ||
+          createDeleteAfter(weekStart),
+
+        theme:
+          selectedDraft.theme || "",
+
+        representativeMemo:
+          selectedDraft.memo || "",
+
+        leaderMemo:
+          leaderMemo.trim(),
+
+        originalDayMenus,
+        dayMenus: cleanedLeaderDayMenus,
+
+        publishedBy: memberId,
+
+        publishedByName:
+          memberName || "パート長",
+
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+        publishedAt: serverTimestamp(),
+      });
+
+      batch.update(draftReference, {
+        status: "published",
+
+        leaderDayMenus:
+          cleanedLeaderDayMenus,
+
+        leaderMemo:
+          leaderMemo.trim(),
+
+        publishedPlanId:
+          planReference.id,
+
+        publishedBy: memberId,
+        publishedByName:
+          memberName || "パート長",
+
+        publishedAt:
+          serverTimestamp(),
+
+        updatedAt:
+          serverTimestamp(),
+      });
+
+      await batch.commit();
 
       alert("完成メニューを公開しました");
 
       closeEditor();
       await loadDrafts();
     } catch (error) {
-      console.error("完成メニューの公開に失敗しました", error);
-      alert("完成メニューの公開に失敗しました");
+      console.error(
+        "完成メニューの公開に失敗しました",
+        error
+      );
+
+      alert(
+        createErrorMessage(
+          "完成メニューの公開に失敗しました",
+          error
+        )
+      );
     } finally {
       setPublishing(false);
     }
@@ -665,7 +827,10 @@ export default function ReviewPage() {
                 <SubmissionCard
                   key={draft.id}
                   draft={draft}
-                  onOpen={() => openDraft(draft)}
+                  disabled={opening}
+                  onOpen={() =>
+                    void openDraft(draft)
+                  }
                 />
               ))}
 
@@ -692,7 +857,8 @@ export default function ReviewPage() {
                   </p>
 
                   <h2 className="mt-2 text-2xl font-black">
-                    {selectedDraft.event}の完成版を作成
+                    {selectedDraft.event}
+                    の完成版を作成
                   </h2>
 
                   <p className="mt-2 text-sm font-bold text-slate-400">
@@ -705,8 +871,9 @@ export default function ReviewPage() {
 
                 <button
                   type="button"
+                  disabled={saving || publishing}
                   onClick={closeEditor}
-                  className="shrink-0 rounded-full border border-white/10 bg-white/[0.06] px-4 py-2 text-xs font-black text-slate-300"
+                  className="shrink-0 rounded-full border border-white/10 bg-white/[0.06] px-4 py-2 text-xs font-black text-slate-300 disabled:opacity-50"
                 >
                   一覧へ戻る
                 </button>
@@ -736,7 +903,9 @@ export default function ReviewPage() {
                 <textarea
                   value={leaderMemo}
                   onChange={(event) =>
-                    setLeaderMemo(event.target.value)
+                    setLeaderMemo(
+                      event.target.value
+                    )
                   }
                   placeholder="例：コーチと相談し、木曜日の走本数を3本から2本へ変更"
                   className="mt-3 min-h-28 w-full rounded-2xl border border-white/10 bg-black/20 p-4 font-bold leading-6 text-white outline-none placeholder:text-slate-700 focus:border-cyan-400/50 focus:ring-4 focus:ring-cyan-500/10"
@@ -772,7 +941,9 @@ export default function ReviewPage() {
                     </p>
 
                     <p className="mt-1 text-xs font-black text-white">
-                      {formatShortDateLocal(day.date)}
+                      {formatShortDateLocal(
+                        day.date
+                      )}
                     </p>
 
                     <p className="mt-2 text-[10px] font-bold text-slate-500">
@@ -793,7 +964,8 @@ export default function ReviewPage() {
                       </p>
 
                       <h2 className="mt-2 text-xl font-black">
-                        {selectedDay.label}曜日の編集
+                        {selectedDay.label}
+                        曜日の編集
                       </h2>
                     </div>
 
@@ -840,7 +1012,10 @@ export default function ReviewPage() {
                           key={`${item.drillId}-${itemIndex}`}
                           item={item}
                           index={itemIndex}
-                          onUpdate={(field, value) =>
+                          onUpdate={(
+                            field,
+                            value
+                          ) =>
                             updateItem(
                               itemIndex,
                               field,
@@ -848,7 +1023,9 @@ export default function ReviewPage() {
                             )
                           }
                           onRemove={() =>
-                            removeItem(itemIndex)
+                            removeItem(
+                              itemIndex
+                            )
                           }
                         />
                       )
@@ -928,12 +1105,14 @@ export default function ReviewPage() {
               </>
             )}
 
-            <div className="mt-5 grid gap-3 md:grid-cols-2">
+            <div className="relative z-50 mt-5 grid gap-3 md:grid-cols-2">
               <button
                 type="button"
                 disabled={saving || publishing}
-                onClick={saveLeaderEdit}
-                className="rounded-2xl border border-white/10 bg-white/[0.07] py-4 font-black text-white transition hover:bg-white/10 disabled:opacity-50"
+                onClick={() =>
+                  void saveLeaderEdit()
+                }
+                className="touch-manipulation rounded-2xl border border-white/10 bg-white/[0.07] py-4 font-black text-white transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {saving
                   ? "保存中..."
@@ -943,8 +1122,10 @@ export default function ReviewPage() {
               <button
                 type="button"
                 disabled={saving || publishing}
-                onClick={publishPlan}
-                className="rounded-2xl bg-gradient-to-r from-cyan-500 via-blue-600 to-violet-600 py-4 font-black text-white shadow-xl shadow-blue-500/20 transition hover:-translate-y-0.5 disabled:opacity-50"
+                onClick={() =>
+                  void publishPlan()
+                }
+                className="touch-manipulation rounded-2xl bg-gradient-to-r from-cyan-500 via-blue-600 to-violet-600 py-4 font-black text-white shadow-xl shadow-blue-500/20 transition hover:-translate-y-0.5 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {publishing
                   ? "公開中..."
@@ -973,9 +1154,11 @@ export default function ReviewPage() {
 function SubmissionCard({
   draft,
   onOpen,
+  disabled,
 }: {
   draft: WeeklyDraft;
   onOpen: () => void;
+  disabled: boolean;
 }) {
   const dayMenus = getDraftDayMenus(draft);
 
@@ -1026,13 +1209,16 @@ function SubmissionCard({
 
           <button
             type="button"
+            disabled={disabled}
             onClick={onOpen}
-            className="shrink-0 rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 px-4 py-3 text-xs font-black text-white shadow-lg shadow-cyan-500/20"
+            className="shrink-0 touch-manipulation rounded-2xl bg-gradient-to-r from-cyan-500 to-blue-600 px-4 py-3 text-xs font-black text-white shadow-lg shadow-cyan-500/20 disabled:opacity-50"
           >
-            {draft.status === "published" ||
-            draft.status === "approved"
-              ? "内容を見る"
-              : "編集する"}
+            {disabled
+              ? "読込中..."
+              : draft.status === "published" ||
+                  draft.status === "approved"
+                ? "内容を見る"
+                : "編集する"}
           </button>
         </div>
 
@@ -1080,10 +1266,12 @@ function LeaderItemCard({
 }: {
   item: WeeklyItem;
   index: number;
+
   onUpdate: (
     field: keyof WeeklyItem,
     value: string
   ) => void;
+
   onRemove: () => void;
 }) {
   return (
@@ -1201,7 +1389,7 @@ function SmallInput({
   onChange,
 }: {
   label: string;
-  value: string;
+  value?: string;
   onChange: (value: string) => void;
 }) {
   return (
@@ -1253,8 +1441,10 @@ function SummaryCard({
   const styles = {
     cyan:
       "border-cyan-300/15 bg-cyan-400/[0.06] text-cyan-300",
+
     pink:
       "border-pink-300/15 bg-pink-400/[0.06] text-pink-300",
+
     violet:
       "border-violet-300/15 bg-violet-400/[0.06] text-violet-300",
   };
@@ -1280,7 +1470,10 @@ function getDraftDayMenus(
   if (draft.dayMenus?.length) {
     return draft.dayMenus.map((day) => ({
       ...day,
-      startTime: day.startTime || "17:00",
+
+      startTime:
+        day.startTime || "17:00",
+
       items: (day.items || []).map((item) =>
         normalizeWeeklyItem(item)
       ),
@@ -1306,9 +1499,13 @@ function cloneDayMenus(
 ): DayMenu[] {
   return menus.map((day) => ({
     ...day,
+
     items: day.items.map((item) => ({
       ...item,
-      purposeTags: [...(item.purposeTags || [])],
+
+      purposeTags: [
+        ...(item.purposeTags || []),
+      ],
     })),
   }));
 }
@@ -1335,10 +1532,13 @@ function getStatusStyle(status: string) {
   ) {
     return {
       label: "確認待ち",
+
       card:
         "border-cyan-300/20 bg-cyan-400/[0.05]",
+
       badge:
         "border-cyan-300/20 bg-cyan-400/10 text-cyan-300",
+
       glow: "bg-cyan-400/10",
     };
   }
@@ -1346,10 +1546,13 @@ function getStatusStyle(status: string) {
   if (status === "editing") {
     return {
       label: "パート長編集中",
+
       card:
         "border-pink-300/20 bg-pink-400/[0.05]",
+
       badge:
         "border-pink-300/20 bg-pink-400/10 text-pink-300",
+
       glow: "bg-pink-400/10",
     };
   }
@@ -1360,10 +1563,13 @@ function getStatusStyle(status: string) {
   ) {
     return {
       label: "公開済み",
+
       card:
         "border-violet-300/20 bg-violet-400/[0.05]",
+
       badge:
         "border-violet-300/20 bg-violet-400/10 text-violet-300",
+
       glow: "bg-violet-400/10",
     };
   }
@@ -1371,8 +1577,111 @@ function getStatusStyle(status: string) {
   return {
     label: status,
     card: "border-white/10 bg-black/20",
+
     badge:
       "border-white/10 bg-white/[0.05] text-slate-300",
+
     glow: "bg-white/5",
   };
+}
+
+/**
+ * Firestoreへ保存できないundefinedを、
+ * 配列・プレーンオブジェクトの中から削除します。
+ *
+ * serverTimestampなどFirestore固有オブジェクトは
+ * 変換しないようにしています。
+ */
+function removeUndefinedValues<T>(
+  value: T
+): T {
+  if (Array.isArray(value)) {
+    return value
+      .filter(
+        (item) => item !== undefined
+      )
+      .map((item) =>
+        removeUndefinedValues(item)
+      ) as T;
+  }
+
+  if (isPlainObject(value)) {
+    const entries = Object.entries(value)
+      .filter(
+        ([, itemValue]) =>
+          itemValue !== undefined
+      )
+      .map(([key, itemValue]) => [
+        key,
+        removeUndefinedValues(itemValue),
+      ]);
+
+    return Object.fromEntries(entries) as T;
+  }
+
+  return value;
+}
+
+function isPlainObject(
+  value: unknown
+): value is Record<string, unknown> {
+  if (
+    value === null ||
+    typeof value !== "object"
+  ) {
+    return false;
+  }
+
+  const prototype =
+    Object.getPrototypeOf(value);
+
+  return (
+    prototype === Object.prototype ||
+    prototype === null
+  );
+}
+
+function createErrorMessage(
+  title: string,
+  error: unknown
+): string {
+  const detail =
+    error instanceof Error
+      ? error.message
+      : String(error);
+
+  if (
+    detail.includes(
+      "Missing or insufficient permissions"
+    )
+  ) {
+    return [
+      title,
+      "",
+      "Firestoreの書き込み権限がありません。",
+      "FirebaseのFirestoreルールを確認してください。",
+      "",
+      detail,
+    ].join("\n");
+  }
+
+  if (
+    detail.includes(
+      "Unsupported field value: undefined"
+    )
+  ) {
+    return [
+      title,
+      "",
+      "保存データにundefinedが含まれています。",
+      "",
+      detail,
+    ].join("\n");
+  }
+
+  return [
+    title,
+    "",
+    detail,
+  ].join("\n");
 }
