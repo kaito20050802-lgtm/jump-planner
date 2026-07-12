@@ -337,6 +337,62 @@ export default function WeeklyEditor({
     );
   };
 
+  /**
+   * SUMMARY欄のドラッグ操作で
+   * 選択中曜日の練習順を入れ替える。
+   *
+   * dayMenusのitems自体を変更するため、
+   * 下書き・提出・完成メニューにも
+   * この順番がそのまま保存されます。
+   */
+  const reorderItems = (
+    oldIndex: number,
+    newIndex: number
+  ) => {
+    if (
+      oldIndex === newIndex ||
+      oldIndex < 0 ||
+      newIndex < 0
+    ) {
+      return;
+    }
+
+    setDayMenus((currentMenus) =>
+      currentMenus.map((day, dayIndex) => {
+        if (
+          dayIndex !== selectedDayIndex
+        ) {
+          return day;
+        }
+
+        const nextItems = [
+          ...day.items,
+        ];
+
+        const [movedItem] =
+          nextItems.splice(
+            oldIndex,
+            1
+          );
+
+        if (!movedItem) {
+          return day;
+        }
+
+        nextItems.splice(
+          newIndex,
+          0,
+          movedItem
+        );
+
+        return {
+          ...day,
+          items: nextItems,
+        };
+      })
+    );
+  };
+
   const validateBeforeSave = (
     status: SaveStatus
   ): boolean => {
@@ -383,6 +439,7 @@ export default function WeeklyEditor({
     }
 
     const today = getTodayISO();
+
     const minDate = addDaysISO(
       today,
       -14
@@ -728,9 +785,12 @@ export default function WeeklyEditor({
         onRemoveItem={removeItem}
       />
 
-      {/* その日のまとめ */}
+      {/* その日のまとめ・並べ替え */}
       <WeeklySummary
         selectedDay={selectedDay}
+        onReorderItems={
+          reorderItems
+        }
       />
 
       {/* 週間一覧 */}
@@ -1115,8 +1175,8 @@ function SectionTitle({
 }
 
 /**
- * Firestoreで保存できないundefinedを
- * 配列・オブジェクトの中から再帰的に削除します。
+ * Firestoreへ保存できないundefinedを、
+ * 配列・オブジェクト内から再帰的に削除します。
  */
 function removeUndefinedValues<T>(
   value: T
