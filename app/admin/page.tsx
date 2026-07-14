@@ -166,7 +166,17 @@ export default function AdminPage() {
             label="担当・専門種目"
             value={editForm.event}
             onChange={(v) => setEditForm({ ...editForm, event: v })}
-            options={["走高跳", "棒高跳", "走幅跳", "三段跳", "共通"].map((v) => ({ label: v, value: v }))}
+            options={[
+              "共通",
+              "走幅跳",
+              "三段跳",
+              "走高跳",
+              "棒高跳",
+              "女子部",
+            ].map((v) => ({
+              label: v,
+              value: v,
+            }))}
           />
 
           <Select
@@ -206,7 +216,17 @@ export default function AdminPage() {
             label="担当・専門種目"
             value={form.event}
             onChange={(v) => setForm({ ...form, event: v })}
-            options={["走高跳", "棒高跳", "走幅跳", "三段跳", "共通"].map((v) => ({ label: v, value: v }))}
+            options={[
+              "共通",
+              "走幅跳",
+              "三段跳",
+              "走高跳",
+              "棒高跳",
+              "女子部",
+            ].map((v) => ({
+              label: v,
+              value: v,
+            }))}
           />
 
           <Select
