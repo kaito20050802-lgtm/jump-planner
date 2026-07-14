@@ -137,17 +137,32 @@ export default function WeeklyEditor({
   }, [editingDraft]);
 
   const availableDrills = useMemo(() => {
-    return drills.filter((drill) => {
-      if (role === "leader") {
-        return true;
+    return [...drills].sort((a, b) => {
+      // 共通を一番上に表示
+      if (a.targetEvent === "共通" && b.targetEvent !== "共通") return -1;
+      if (a.targetEvent !== "共通" && b.targetEvent === "共通") return 1;
+
+      // その後は種目順
+      const order = [
+        "走幅跳",
+        "三段跳",
+        "走高跳",
+        "棒高跳",
+        "女子部",
+      ];
+
+      const aIndex = order.indexOf(a.targetEvent);
+      const bIndex = order.indexOf(b.targetEvent);
+
+      if (aIndex !== bIndex) {
+        return aIndex - bIndex;
       }
 
-      return (
-        drill.targetEvent === "共通" ||
-        drill.targetEvent === event
-      );
+      // 同じ種目内では練習名順
+      return a.name.localeCompare(b.name, "ja");
     });
-  }, [drills, role, event]);
+  }, [drills]);
+
 
   const selectedDay =
     dayMenus[selectedDayIndex];
